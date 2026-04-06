@@ -1,0 +1,41 @@
+nutrimatch/
+├── backend/                    → (Go)
+└── frontend/
+    ├── app/
+    │   ├── layout.tsx
+    │   ├── page.tsx                        # Landing page
+    │   ├── (auth)/
+    │   │   ├── login/page.tsx
+    │   │   └── register/page.tsx
+    │   ├── onboarding/page.tsx             # Multi-step form
+    │   ├── results/page.tsx                # Meal recommendations
+    │   └── profile/page.tsx
+    ├── components/
+    │   ├── ui/
+    │   │   ├── Button.tsx
+    │   │   ├── Input.tsx
+    │   │   ├── Select.tsx
+    │   │   ├── Checkbox.tsx
+    │   │   └── Card.tsx
+    │   ├── forms/
+    │   │   ├── PersonalInfoStep.tsx
+    │   │   ├── LifestyleStep.tsx
+    │   │   ├── PreferencesStep.tsx
+    │   │   └── ConstraintsStep.tsx
+    │   ├── layout/
+    │   │   ├── Navbar.tsx
+    │   │   └── Footer.tsx
+    │   └── results/
+    │       ├── MealCard.tsx
+    │       └── RecommendationList.tsx
+    ├── lib/
+    │   ├── types.ts
+    │   ├── validation.ts
+    │   ├── mock-data.ts
+    │   └── constants.ts
+    ├── hooks/
+    │   └── useProfileForm.ts
+    ├── next.config.ts
+    ├── tailwind.config.ts
+    ├── tsconfig.json
+    └── package.json
