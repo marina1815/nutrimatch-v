@@ -1,0 +1,182 @@
+{
+  "info": {
+    "name": "NutriMatch API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /api/v1/health",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /api/v1/auth/register",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Amine Benali\",\n  \"email\": \"amine@example.com\",\n  \"password\": \"StrongPass123!\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/register"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.access_token) {",
+                  "  pm.environment.set('access_token', json.access_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/login",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"amine@example.com\",\n  \"password\": \"StrongPass123!\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/login"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.access_token) {",
+                  "  pm.environment.set('access_token', json.access_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/refresh",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/refresh"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json && json.access_token) {",
+                  "  pm.environment.set('access_token', json.access_token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/logout",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/auth/logout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Profile",
+      "item": [
+        {
+          "name": "POST /api/v1/profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"personal\": {\n    \"fullName\": \"Amine Benali\",\n    \"age\": 26,\n    \"sex\": \"male\",\n    \"weight\": 78,\n    \"height\": 178,\n    \"profession\": \"Developer\",\n    \"city\": \"Casablanca\"\n  },\n  \"lifestyle\": {\n    \"activityLevel\": \"moderate\",\n    \"lifestyleType\": \"employee\",\n    \"goal\": \"weight_maintenance\"\n  },\n  \"preferences\": {\n    \"likes\": [\"chicken\", \"rice\"],\n    \"dislikes\": [\"broccoli\"],\n    \"mealStyles\": [\"Traditionnel\"],\n    \"mealsPerDay\": 3\n  },\n  \"constraints\": {\n    \"allergies\": [\"peanut\"],\n    \"conditions\": [],\n    \"excludedIngredients\": [\"pork\"],\n    \"hasChronicDisease\": false,\n    \"chronicDiseases\": [],\n    \"takesMedication\": false,\n    \"medications\": \"\"\n  }\n}"
+            },
+            "url": "{{base_url}}/api/v1/profile"
+          }
+        },
+        {
+          "name": "GET /api/v1/profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/profile"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Recommendations",
+      "item": [
+        {
+          "name": "GET /api/v1/recommendations/:profileId",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/recommendations/{{profile_id}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Frontend Compatibility",
+      "item": [
+        {
+          "name": "POST /api/profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"personal\": {\n    \"fullName\": \"Amine Benali\",\n    \"age\": 26,\n    \"sex\": \"male\",\n    \"weight\": 78,\n    \"height\": 178,\n    \"profession\": \"Developer\",\n    \"city\": \"Casablanca\"\n  },\n  \"lifestyle\": {\n    \"activityLevel\": \"moderate\",\n    \"lifestyleType\": \"employee\",\n    \"goal\": \"weight_maintenance\"\n  },\n  \"preferences\": {\n    \"likes\": [\"chicken\", \"rice\"],\n    \"dislikes\": [\"broccoli\"],\n    \"mealStyles\": [\"Traditionnel\"],\n    \"mealsPerDay\": 3\n  },\n  \"constraints\": {\n    \"allergies\": [\"peanut\"],\n    \"conditions\": [],\n    \"excludedIngredients\": [\"pork\"],\n    \"hasChronicDisease\": false,\n    \"chronicDiseases\": [],\n    \"takesMedication\": false,\n    \"medications\": \"\"\n  }\n}"
+            },
+            "url": "{{base_url}}/api/profile"
+          }
+        },
+        {
+          "name": "GET /api/recommendations/:profileId",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/recommendations/{{profile_id}}"
+          }
+        }
+      ]
+    }
+  ]
+}
+
