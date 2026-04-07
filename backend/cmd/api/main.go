@@ -82,7 +82,7 @@ func main() {
 	recHandler := &handlers.RecommendationHandler{Service: recommendationService}
 	healthHandler := &handlers.HealthHandler{}
 
-	router := routes.SetupRouter(cfg, tokens, authHandler, profileHandler, recHandler, healthHandler)
+	router := routes.SetupRouter(cfg, tokens, sessionRepo, authHandler, profileHandler, recHandler, healthHandler)
 	if err := router.Run(":" + cfg.AppPort); err != nil {
 		log.Fatal(err)
 	}

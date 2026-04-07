@@ -8,10 +8,11 @@ import (
 	"github.com/marina1815/nutrimatch/internal/config"
 	"github.com/marina1815/nutrimatch/internal/http/handlers"
 	"github.com/marina1815/nutrimatch/internal/http/middleware"
+	"github.com/marina1815/nutrimatch/internal/repository"
 	"github.com/marina1815/nutrimatch/internal/security"
 )
 
-func SetupRouter(cfg *config.Config, tokens *security.TokenManager, auth *handlers.AuthHandler, profiles *handlers.ProfileHandler, recs *handlers.RecommendationHandler, health *handlers.HealthHandler) *gin.Engine {
+func SetupRouter(cfg *config.Config, tokens *security.TokenManager, sessions repository.SessionRepository, auth *handlers.AuthHandler, profiles *handlers.ProfileHandler, recs *handlers.RecommendationHandler, health *handlers.HealthHandler) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.BodyLimit(cfg.BodyLimitBytes))
@@ -45,16 +46,10 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, auth *handle
 		v1.POST("/auth/logout", auth.Logout)
 
 		protected := v1.Group("")
-		protected.Use(middleware.AuthRequired(tokens))
+		protected.Use(middleware.AuthRequired(tokens, sessions))
 		protected.POST("/profile", profiles.Upsert)
 		protected.GET("/profile", profiles.Get)
 		protected.GET("/recommendations/:profileId", recs.Get)
-	}
-
-	apiCompat := r.Group("/api")
-	{
-		apiCompat.POST("/profile", middleware.AuthRequired(tokens), profiles.Upsert)
-		apiCompat.GET("/recommendations/:profileId", middleware.AuthRequired(tokens), recs.Get)
 	}
 
 	return r

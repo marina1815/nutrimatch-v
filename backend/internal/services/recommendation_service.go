@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/marina1815/nutrimatch/internal/clients/googleai"
 	"github.com/marina1815/nutrimatch/internal/clients/spoonacular"
 	"github.com/marina1815/nutrimatch/internal/http/dto"
 	"github.com/marina1815/nutrimatch/internal/models"
-	"github.com/marina1815/nutrimatch/internal/validation"
 )
 
 type RecommendationService struct {
@@ -33,15 +33,28 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID s
 	}
 
 	query := buildQuery(preferences.MealStyles, preferences.Likes)
+	intolerances := normalizeIntolerances(constraints.Allergies)
+	exclude := mergeLists(preferences.Dislikes, constraints.Allergies, constraints.ExcludedIngredients)
+	include := normalizeList(preferences.Likes)
+
 	resp, err := s.Recipes.Search(spoonacular.SearchOptions{
 		Query:             query,
-		IncludeIngredients: preferences.Likes,
-		ExcludeIngredients: mergeLists(preferences.Dislikes, constraints.Allergies, constraints.ExcludedIngredients),
-		Intolerances:      constraints.Allergies,
+		IncludeIngredients: include,
+		ExcludeIngredients: exclude,
+		Intolerances:      intolerances,
 		Number:            12,
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(resp.Results) == 0 {
+		resp, err = s.Recipes.Search(spoonacular.SearchOptions{
+			Query:  query,
+			Number: 12,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	meals := make([]dto.MealRecommendation, 0, len(resp.Results))
@@ -113,10 +126,57 @@ func (s *RecommendationService) rankWithAI(profile *models.Profile, lifestyle *m
 }
 
 func buildQuery(styles, likes []string) string {
-	if len(styles) == 0 && len(likes) == 0 {
+	terms := append(normalizeList(styles), normalizeList(likes)...)
+	if len(terms) == 0 {
 		return "healthy"
 	}
-	return strings.Join(append(styles, likes...), " ")
+	return strings.Join(terms, " ")
+}
+
+func normalizeList(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		clean := normalizeKeyword(item)
+		if clean != "" {
+			out = append(out, clean)
+		}
+	}
+	return out
+}
+
+func normalizeIntolerances(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		clean := normalizeKeyword(item)
+		if clean == "shrimp" || clean == "shrimps" {
+			clean = "shellfish"
+		}
+		if clean != "" {
+			out = append(out, clean)
+		}
+	}
+	return out
+}
+
+func normalizeKeyword(input string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(input))
+	if trimmed == "" {
+		return ""
+	}
+	mapped := map[string]string{
+		"traditionnel": "traditional",
+		"recettes saines": "healthy",
+		"oriental": "middle eastern",
+		"moderne": "modern",
+		"repas froids": "cold",
+		"rapide": "quick",
+		"equilibre": "balanced",
+		"équilibré": "balanced",
+	}
+	if v, ok := mapped[trimmed]; ok {
+		return v
+	}
+	return trimmed
 }
 
 func mergeLists(lists ...[]string) []string {
@@ -124,11 +184,10 @@ func mergeLists(lists ...[]string) []string {
 	seen := map[string]struct{}{}
 	for _, list := range lists {
 		for _, item := range list {
-			key := validation.NormalizeString(item)
+			key := normalizeKeyword(item)
 			if key == "" {
 				continue
 			}
-			key = strings.ToLower(key)
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -159,9 +218,9 @@ func extractMacros(nutrients []spoonacular.Nutrient) (float64, float64, float64,
 func extractIngredients(items []spoonacular.Ingredient) []string {
 	out := make([]string, 0, len(items))
 	for _, item := range items {
-		name := validation.NormalizeString(item.Name)
+		name := normalizeKeyword(item.Name)
 		if name != "" {
-			out = append(out, strings.ToLower(name))
+			out = append(out, singularize(name))
 		}
 	}
 	return out
@@ -171,14 +230,22 @@ func passesFailSafe(ingredients []string, allergies []string, excluded []string)
 	blocked := mergeLists(allergies, excluded)
 	blockSet := map[string]struct{}{}
 	for _, item := range blocked {
-		blockSet[item] = struct{}{}
+		blockSet[singularize(item)] = struct{}{}
 	}
 	for _, ing := range ingredients {
-		if _, found := blockSet[ing]; found {
+		if _, found := blockSet[singularize(ing)]; found {
 			return false
 		}
 	}
 	return true
+}
+
+func singularize(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if len(trimmed) > 2 && strings.HasSuffix(trimmed, "s") {
+		return strings.TrimSuffix(trimmed, "s")
+	}
+	return trimmed
 }
 
 func buildAIPrompt(profile *models.Profile, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, meals []dto.MealRecommendation) string {
@@ -207,9 +274,11 @@ func buildAIPrompt(profile *models.Profile, lifestyle *models.Lifestyle, prefere
 }
 
 func stripHTML(input string) string {
-	out := strings.ReplaceAll(input, "<b>", "")
+	out := input
+	out = strings.ReplaceAll(out, "<b>", "")
 	out = strings.ReplaceAll(out, "</b>", "")
-	out = strings.ReplaceAll(input, "<a>", "")
-	out = strings.ReplaceAll(input, "</a>", "")
+	out = strings.ReplaceAll(out, "<a>", "")
+	out = strings.ReplaceAll(out, "</a>", "")
+	out = strings.TrimFunc(out, func(r rune) bool { return unicode.IsSpace(r) })
 	return out
 }

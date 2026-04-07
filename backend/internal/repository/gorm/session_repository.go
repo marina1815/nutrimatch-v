@@ -39,3 +39,11 @@ func (r *SessionRepository) Revoke(ctx context.Context, sessionID string) error 
 	now := time.Now()
 	return r.db.WithContext(ctx).Model(&models.Session{}).Where("id = ?", sessionID).Update("revoked_at", &now).Error
 }
+
+func (r *SessionRepository) GetByID(ctx context.Context, sessionID string) (*models.Session, error) {
+	var session models.Session
+	if err := r.db.WithContext(ctx).First(&session, "id = ?", sessionID).Error; err != nil {
+		return nil, err
+	}
+	return &session, nil
+}

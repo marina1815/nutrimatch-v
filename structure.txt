@@ -1,41 +1,71 @@
 nutrimatch/
-├── backend/                    → (Go)
-└── frontend/
-    ├── app/
-    │   ├── layout.tsx
-    │   ├── page.tsx                        # Landing page
-    │   ├── (auth)/
-    │   │   ├── login/page.tsx
-    │   │   └── register/page.tsx
-    │   ├── onboarding/page.tsx             # Multi-step form
-    │   ├── results/page.tsx                # Meal recommendations
-    │   └── profile/page.tsx
-    ├── components/
-    │   ├── ui/
-    │   │   ├── Button.tsx
-    │   │   ├── Input.tsx
-    │   │   ├── Select.tsx
-    │   │   ├── Checkbox.tsx
-    │   │   └── Card.tsx
-    │   ├── forms/
-    │   │   ├── PersonalInfoStep.tsx
-    │   │   ├── LifestyleStep.tsx
-    │   │   ├── PreferencesStep.tsx
-    │   │   └── ConstraintsStep.tsx
-    │   ├── layout/
-    │   │   ├── Navbar.tsx
-    │   │   └── Footer.tsx
-    │   └── results/
-    │       ├── MealCard.tsx
-    │       └── RecommendationList.tsx
-    ├── lib/
-    │   ├── types.ts
-    │   ├── validation.ts
-    │   ├── mock-data.ts
-    │   └── constants.ts
-    ├── hooks/
-    │   └── useProfileForm.ts
+├── backend/    → (Go Backend)
+│   ├── cmd/
+│   │   └── api/
+│   │       └── main.go
+│   ├── internal/
+│   │   ├── clients/
+│   │   │   ├── googleai/
+│   │   │   └── spoonacular/
+│   │   ├── config/
+│   │   ├── database/
+│   │   ├── http/
+│   │   │   ├── dto/
+│   │   │   ├── handlers/
+│   │   │   ├── middleware/
+│   │   │   └── routes/
+│   │   ├── models/
+│   │   ├── repository/
+│   │   │   └── gorm/
+│   │   ├── security/
+│   │   ├── services/
+│   │   └── validation/
+│   ├── migrations/
+│   │   └── 0001_init.sql
+│   ├── postman/
+│   │   ├── NutriMatch.postman_collection.json
+│   │   └── NutriMatch.postman_environment.json
+│   ├── README.md
+│   └── go.mod
+├── doc/
+│   ├── dfd_v3.md
+│   ├── dfd_v3.png
+│   ├── nutrimatch.md
+│   └── stride.md
+└── frontend/   → (NextJS Frontend)
+    ├── src/
+    │   ├── app/
+    │   │   ├── layout.tsx
+    │   │   ├── page.tsx                        # Landing page
+    │   │   ├── (auth)/
+    │   │   │   ├── login/page.tsx
+    │   │   │   └── register/page.tsx
+    │   │   ├── onboarding/page.tsx             # Multi-step form
+    │   │   ├── results/page.tsx                # Meal recommendations
+    │   │   └── profile/page.tsx
+    │   ├── components/
+    │   │   ├── ui/
+    │   │   │   ├── Button.tsx
+    │   │   │   ├── Input.tsx
+    │   │   │   ├── Select.tsx
+    │   │   │   ├── Checkbox.tsx
+    │   │   │   └── Card.tsx
+    │   │   ├── forms/
+    │   │   │   ├── PersonalInfoStep.tsx
+    │   │   │   ├── LifestyleStep.tsx
+    │   │   │   ├── PreferencesStep.tsx
+    │   │   │   └── ConstraintsStep.tsx
+    │   │   └── results/
+    │   │       ├── MealCard.tsx
+    │   │       └── RecommendationList.tsx
+    │   ├── hooks/
+    │   │   └── useProfileForm.ts
+    │   └── lib/
+    │       ├── api.ts
+    │       ├── types.ts
+    │       ├── validation.ts
+    │       ├── mock-data.ts
+    │       └── constants.ts
     ├── next.config.ts
-    ├── tailwind.config.ts
     ├── tsconfig.json
     └── package.json

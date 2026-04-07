@@ -19,16 +19,24 @@ type TokenManager struct {
 	TokenPepper  []byte
 }
 
-func (t *TokenManager) NewAccessToken(userID string) (string, time.Time, error) {
+type AccessClaims struct {
+	jwt.RegisteredClaims
+	SessionID string `json:"sid"`
+}
+
+func (t *TokenManager) NewAccessToken(userID, sessionID string) (string, time.Time, error) {
 	now := time.Now()
 	exp := now.Add(t.AccessTTL)
 
-	claims := jwt.RegisteredClaims{
-		Subject:   userID,
-		Issuer:    t.Issuer,
-		Audience:  []string{t.Audience},
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(exp),
+	claims := AccessClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID,
+			Issuer:    t.Issuer,
+			Audience:  []string{t.Audience},
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(exp),
+		},
+		SessionID: sessionID,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -36,14 +44,14 @@ func (t *TokenManager) NewAccessToken(userID string) (string, time.Time, error) 
 	return signed, exp, err
 }
 
-func (t *TokenManager) ParseAccessToken(raw string) (*jwt.RegisteredClaims, error) {
-	parsed, err := jwt.ParseWithClaims(raw, &jwt.RegisteredClaims{}, func(token *jwt.Token) (any, error) {
+func (t *TokenManager) ParseAccessToken(raw string) (*AccessClaims, error) {
+	parsed, err := jwt.ParseWithClaims(raw, &AccessClaims{}, func(token *jwt.Token) (any, error) {
 		return t.Secret, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if claims, ok := parsed.Claims.(*jwt.RegisteredClaims); ok && parsed.Valid {
+	if claims, ok := parsed.Claims.(*AccessClaims); ok && parsed.Valid {
 		return claims, nil
 	}
 	return nil, jwt.ErrTokenInvalidClaims
@@ -65,4 +73,3 @@ func (t *TokenManager) HashRefreshToken(token string) string {
 	sum := mac.Sum(nil)
 	return base64.RawStdEncoding.EncodeToString(sum)
 }
-

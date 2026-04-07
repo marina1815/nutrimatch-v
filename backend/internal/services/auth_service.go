@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/marina1815/nutrimatch/internal/models"
 	"github.com/marina1815/nutrimatch/internal/repository"
 	"github.com/marina1815/nutrimatch/internal/security"
@@ -48,11 +49,11 @@ func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string,
 	if err != nil {
 		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
 	}
-	if session.ExpiresAt.Before(time.Now()) {
+	if session.ExpiresAt.Before(time.Now()) || session.RevokedAt != nil {
 		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
 	}
 
-	access, accessExp, err := s.Tokens.NewAccessToken(session.UserID)
+	access, accessExp, err := s.Tokens.NewAccessToken(session.UserID, session.ID)
 	if err != nil {
 		return "", time.Time{}, "", time.Time{}, err
 	}
@@ -80,7 +81,8 @@ func (s *AuthService) Logout(ctx context.Context, refreshToken string) error {
 }
 
 func (s *AuthService) createSession(ctx context.Context, userID, userAgent, ip string) (string, time.Time, string, time.Time, error) {
-	access, accessExp, err := s.Tokens.NewAccessToken(userID)
+	sessionID := uuid.NewString()
+	access, accessExp, err := s.Tokens.NewAccessToken(userID, sessionID)
 	if err != nil {
 		return "", time.Time{}, "", time.Time{}, err
 	}
@@ -91,6 +93,7 @@ func (s *AuthService) createSession(ctx context.Context, userID, userAgent, ip s
 	}
 
 	session := &models.Session{
+		ID:               sessionID,
 		UserID:           userID,
 		RefreshTokenHash: s.Tokens.HashRefreshToken(refresh),
 		ExpiresAt:        refreshExp,

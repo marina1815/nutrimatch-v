@@ -16,6 +16,7 @@ type UserRepository interface {
 
 type SessionRepository interface {
 	Create(ctx context.Context, session *models.Session) error
+	GetByID(ctx context.Context, sessionID string) (*models.Session, error)
 	GetByRefreshHash(ctx context.Context, refreshHash string) (*models.Session, error)
 	Rotate(ctx context.Context, sessionID, newRefreshHash string, expiresAt time.Time) error
 	Revoke(ctx context.Context, sessionID string) error
