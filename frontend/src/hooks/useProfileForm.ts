@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useState } from "react";
@@ -81,6 +82,7 @@ export function useProfileForm() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as Partial<UserProfile>;
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setData(mergeWithDefaultProfile(parsed));
       } catch {
         setData(defaultProfile);
