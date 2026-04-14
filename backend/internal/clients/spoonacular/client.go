@@ -21,6 +21,8 @@ type SearchOptions struct {
 	IncludeIngredients []string
 	ExcludeIngredients []string
 	Intolerances     []string
+	Diets            []string
+	Cuisines         []string
 	Number           int
 }
 
@@ -77,6 +79,12 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 	}
 	if len(opts.Intolerances) > 0 {
 		q.Set("intolerances", strings.Join(opts.Intolerances, ","))
+	}
+	if len(opts.Diets) > 0 {
+		q.Set("diet", strings.Join(opts.Diets, ","))
+	}
+	if len(opts.Cuisines) > 0 {
+		q.Set("cuisine", strings.Join(opts.Cuisines, ","))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+q.Encode(), nil)

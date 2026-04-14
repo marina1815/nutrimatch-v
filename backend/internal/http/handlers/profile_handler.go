@@ -35,6 +35,8 @@ type profileRequest struct {
 		Likes       []string `json:"likes" validate:"max=25,dive,min=1,max=50"`
 		Dislikes    []string `json:"dislikes" validate:"max=25,dive,min=1,max=50"`
 		MealStyles  []string `json:"mealStyles" validate:"max=20,dive,min=1,max=50"`
+		Diets       []string `json:"diets" validate:"max=20,dive,min=1,max=50"`
+		Cuisines    []string `json:"cuisines" validate:"max=20,dive,min=1,max=50"`
 		MealsPerDay int      `json:"mealsPerDay" validate:"required,gte=1,lte=8"`
 	} `json:"preferences" validate:"required"`
 	Constraints struct {
@@ -126,6 +128,8 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 		Likes:       validation.NormalizeList(req.Preferences.Likes),
 		Dislikes:    validation.NormalizeList(req.Preferences.Dislikes),
 		MealStyles:  validation.NormalizeList(req.Preferences.MealStyles),
+		Diets:       validation.NormalizeList(req.Preferences.Diets),
+		Cuisines:    validation.NormalizeList(req.Preferences.Cuisines),
 		MealsPerDay: req.Preferences.MealsPerDay,
 	}
 	constraints := &models.Constraints{
@@ -230,6 +234,8 @@ func (h *ProfileHandler) Get(c *gin.Context) {
 			"likes":       preferences.Likes,
 			"dislikes":    preferences.Dislikes,
 			"mealStyles":  preferences.MealStyles,
+			"diets":       preferences.Diets,
+			"cuisines":    preferences.Cuisines,
 			"mealsPerDay": preferences.MealsPerDay,
 		},
 		"constraints": gin.H{

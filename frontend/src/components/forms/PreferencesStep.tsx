@@ -1,5 +1,5 @@
 import { Checkbox } from "@/components/ui/Checkbox";
-import { MEAL_STYLE_OPTIONS } from "@/lib/constants";
+import { CUISINE_OPTIONS, DIET_OPTIONS, MEAL_STYLE_OPTIONS } from "@/lib/constants";
 import { UserProfile } from "@/lib/types";
 
 type Props = {
@@ -14,19 +14,22 @@ export function PreferencesStep({ data, setData, errors }: Props) {
   const mealStyles = data.preferences.mealStyles ?? [];
   const likes = data.preferences.likes ?? [];
   const dislikes = data.preferences.dislikes ?? [];
+  const diets = data.preferences.diets ?? [];
+  const cuisines = data.preferences.cuisines ?? [];
 
-  const toggleMealStyle = (item: string) => {
+  const toggleArrayPreference = (
+    key: "mealStyles" | "diets" | "cuisines",
+    value: string
+  ) => {
     setData((prev) => {
-      const currentMealStyles = prev.preferences.mealStyles ?? [];
-      const exists = currentMealStyles.includes(item);
+      const current = prev.preferences[key] ?? [];
+      const exists = current.includes(value);
 
       return {
         ...prev,
         preferences: {
           ...prev.preferences,
-          mealStyles: exists
-            ? currentMealStyles.filter((value) => value !== item)
-            : [...currentMealStyles, item],
+          [key]: exists ? current.filter((v) => v !== value) : [...current, value],
         },
       };
     });
@@ -71,14 +74,42 @@ export function PreferencesStep({ data, setData, errors }: Props) {
       </div>
 
       <div className="nm-field">
-        <label className="nm-label">Style de repas préféré</label>
+        <label className="nm-label">Régimes alimentaires (API)</label>
+        <div className="nm-check-grid">
+          {DIET_OPTIONS.map((item) => (
+            <Checkbox
+              key={item.value}
+              label={item.label}
+              checked={diets.includes(item.value)}
+              onChange={() => toggleArrayPreference("diets", item.value)}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="nm-field">
+        <label className="nm-label">Cuisines préférées (Spoonacular)</label>
+        <div className="nm-check-grid">
+          {CUISINE_OPTIONS.map((item) => (
+            <Checkbox
+              key={item.value}
+              label={item.label}
+              checked={cuisines.includes(item.value)}
+              onChange={() => toggleArrayPreference("cuisines", item.value)}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="nm-field">
+        <label className="nm-label">Style de repas préféré (Vibes)</label>
         <div className="nm-check-grid">
           {MEAL_STYLE_OPTIONS.map((item) => (
             <Checkbox
               key={item}
               label={item}
               checked={mealStyles.includes(item)}
-              onChange={() => toggleMealStyle(item)}
+              onChange={() => toggleArrayPreference("mealStyles", item)}
             />
           ))}
         </div>

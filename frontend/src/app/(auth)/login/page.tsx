@@ -14,13 +14,26 @@ export default function LoginPage() {
     return e;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const errs = validate();
-    if (Object.keys(errs).length) { setErrors(errs); return; }
+    if (Object.keys(errs).length) {
+      setErrors(errs);
+      return;
+    }
+    
     setLoading(true);
-    // TODO: POST /api/auth/login
-    setTimeout(() => { setLoading(false); window.location.href = "/onboarding"; }, 1200);
+    setErrors({});
+
+    try {
+      const data = await import("@/lib/api").then((mod) => mod.loginUser(form));
+      localStorage.setItem("nutrimatch-token", data.access_token);
+      window.location.href = "/onboarding";
+    } catch (err: any) {
+      setErrors({ email: err.message || "Login failed. Check your credentials." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

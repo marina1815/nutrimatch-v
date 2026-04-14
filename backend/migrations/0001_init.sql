@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS health.preferences (
     likes jsonb NOT NULL DEFAULT '[]',
     dislikes jsonb NOT NULL DEFAULT '[]',
     meal_styles jsonb NOT NULL DEFAULT '[]',
+    diets jsonb NOT NULL DEFAULT '[]',
+    cuisines jsonb NOT NULL DEFAULT '[]',
     meals_per_day int NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()

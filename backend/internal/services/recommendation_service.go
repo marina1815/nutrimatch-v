@@ -43,11 +43,6 @@ type RecommendationService struct {
 	TxManager    repository.TxManager
 }
 
-type recommendationTraceBundle struct {
-	Run        *models.RecommendationRun
-	Candidates []*models.RecommendationCandidate
-}
-
 type searchPlan struct {
 	Name    string
 	Query   string
@@ -114,6 +109,8 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 			IncludeIngredients: plan.Include,
 			ExcludeIngredients: plan.Exclude,
 			Intolerances:       normalizeIntolerances(constraints.Allergies),
+			Diets:              preferences.Diets,
+			Cuisines:           preferences.Cuisines,
 			Number:             12,
 		})
 

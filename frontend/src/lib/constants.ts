@@ -26,25 +26,64 @@ export const SEX_OPTIONS = [
   { value: "female", label: "Femme" },
 ];
 
-export const MEAL_STYLE_OPTIONS = [
-  "Traditionnel",
-  "Recettes saines",
-  "Oriental",
-  "Moderne",
-  "Repas froids",
-  "Rapide",
-  "Équilibré",
+export const DIET_OPTIONS = [
+  { value: "gluten free", label: "Sans Gluten" },
+  { value: "ketogenic", label: "Cétogène (Keto)" },
+  { value: "vegetarian", label: "Végétarien" },
+  { value: "lacto-vegetarian", label: "Lacto-Végétarien" },
+  { value: "ovo-vegetarian", label: "Ovo-Végétarien" },
+  { value: "vegan", label: "Végétalien" },
+  { value: "pescetarian", label: "Pescétarien" },
+  { value: "paleo", label: "Paléo" },
+  { value: "primal", label: "Primal" },
+  { value: "whole30", label: "Whole30" },
 ];
 
-export const COMMON_ALLERGIES = [
-  "Arachides",
-  "Lait",
-  "Œufs",
-  "Soja",
-  "Poisson",
-  "Fruits de mer",
-  "Gluten",
+export const CUISINE_OPTIONS = [
+  { value: "african", label: "Africaine" },
+  { value: "american", label: "Américaine" },
+  { value: "british", label: "Britannique" },
+  { value: "cajun", label: "Cajun" },
+  { value: "caribbean", label: "Caribéenne" },
+  { value: "chinese", label: "Chinoise" },
+  { value: "eastern european", label: "Europe de l'Est" },
+  { value: "european", label: "Européenne" },
+  { value: "french", label: "Française" },
+  { value: "german", label: "Allemande" },
+  { value: "greek", label: "Grecque" },
+  { value: "indian", label: "Indienne" },
+  { value: "irish", label: "Irlandaise" },
+  { value: "italian", label: "Italienne" },
+  { value: "japanese", label: "Japonaise" },
+  { value: "jewish", label: "Juive" },
+  { value: "korean", label: "Coréenne" },
+  { value: "latin american", label: "Latino-américaine" },
+  { value: "mediterranean", label: "Méditerranéenne" },
+  { value: "mexican", label: "Mexicaine" },
+  { value: "middle eastern", label: "Moyen-Orient" },
+  { value: "nordic", label: "Nordique" },
+  { value: "southern", label: "Sud-américaine" },
+  { value: "spanish", label: "Espagnole" },
+  { value: "thai", label: "Thaïlandaise" },
+  { value: "vietnamese", label: "Vietnamienne" },
 ];
+
+export const INTOLERANCE_OPTIONS = [
+  { value: "dairy", label: "Produits laitiers" },
+  { value: "egg", label: "Œufs" },
+  { value: "gluten", label: "Gluten" },
+  { value: "grain", label: "Grains" },
+  { value: "peanut", label: "Arachides" },
+  { value: "seafood", label: "Poisson" },
+  { value: "sesame", label: "Sésame" },
+  { value: "shellfish", label: "Fruits de mer" },
+  { value: "soy", label: "Soja" },
+  { value: "sulfite", label: "Sulfite" },
+  { value: "tree nut", label: "Fruits à coque" },
+  { value: "wheat", label: "Blé" },
+];
+
+export const COMMON_ALLERGIES = INTOLERANCE_OPTIONS.map((o) => o.label);
 
 export const COMMON_CONDITIONS = [
   "Diabète",
@@ -60,3 +99,5 @@ export const CHRONIC_DISEASE_OPTIONS = [
   { value: "renal_failure", label: "Insuffisance rénale" },
   { value: "other", label: "Autre" },
 ];
+
+export const MEAL_STYLE_OPTIONS = CUISINE_OPTIONS.map((o) => o.label);

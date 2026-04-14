@@ -29,18 +29,35 @@ export default function RegisterPage() {
     const e: FormErrors = {};
     if (form.name.trim().length < 2) e.name = "Name must be at least 2 characters";
     if (!form.email.includes("@")) e.email = "Enter a valid email address";
-    if (form.password.length < 8) e.password = "Password must be at least 8 characters";
+    if (form.password.length < 12) e.password = "Password must be at least 12 characters";
     if (form.confirm !== form.password) e.confirm = "Passwords do not match";
     return e;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const errs = validate();
-    if (Object.keys(errs).length) { setErrors(errs); return; }
+    if (Object.keys(errs).length) {
+      setErrors(errs);
+      return;
+    }
+    
     setLoading(true);
-    // TODO: POST /api/auth/register
-    setTimeout(() => { setLoading(false); window.location.href = "/onboarding"; }, 1200);
+    setErrors({});
+
+    try {
+      const data = await import("@/lib/api").then((mod) => mod.registerUser({
+        name: form.name,
+        email: form.email,
+        password: form.password,
+      }));
+      localStorage.setItem("nutrimatch-token", data.access_token);
+      window.location.href = "/onboarding";
+    } catch (err: any) {
+      setErrors({ email: err.message || "Registration failed. Please try again." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const strength = (() => {

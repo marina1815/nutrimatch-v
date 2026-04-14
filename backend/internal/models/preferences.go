@@ -8,6 +8,8 @@ type Preferences struct {
 	Likes       StringSlice `gorm:"type:jsonb;not null;default:'[]'"`
 	Dislikes    StringSlice `gorm:"type:jsonb;not null;default:'[]'"`
 	MealStyles  StringSlice `gorm:"type:jsonb;not null;default:'[]'"`
+	Diets       StringSlice `gorm:"type:jsonb;not null;default:'[]'"`
+	Cuisines    StringSlice `gorm:"type:jsonb;not null;default:'[]'"`
 	MealsPerDay int         `gorm:"not null"`
 	CreatedAt   time.Time   `gorm:"not null;default:now()"`
 	UpdatedAt   time.Time   `gorm:"not null;default:now()"`

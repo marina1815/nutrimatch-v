@@ -62,3 +62,12 @@ export function validateStep(step: number, data: UserProfile): ProfileErrors {
 
   return errors;
 }
+
+export function validateProfile(data: UserProfile): ProfileErrors {
+  const errors: ProfileErrors = {};
+  for (let i = 0; i < 4; i++) {
+    const stepErrors = validateStep(i, data);
+    Object.assign(errors, stepErrors);
+  }
+  return errors;
+}

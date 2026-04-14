@@ -1,10 +1,10 @@
 import { Checkbox } from "@/components/ui/Checkbox";
 import {
   CHRONIC_DISEASE_OPTIONS,
-  COMMON_ALLERGIES,
+  INTOLERANCE_OPTIONS,
   COMMON_CONDITIONS,
 } from "@/lib/constants";
-import { UserProfile } from "@/lib/types";
+import { UserProfile, ChronicDisease } from "@/lib/types";
 
 type Props = {
   data: UserProfile;
@@ -36,7 +36,7 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
 
   const toggleDisease = (value: string) => {
     setData((prev) => {
-      const exists = prev.constraints.chronicDiseases.includes(value as any);
+      const exists = prev.constraints.chronicDiseases.includes(value as ChronicDisease);
 
       return {
         ...prev,
@@ -44,7 +44,7 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
           ...prev.constraints,
           chronicDiseases: exists
             ? prev.constraints.chronicDiseases.filter((item) => item !== value)
-            : [...prev.constraints.chronicDiseases, value as any],
+            : [...prev.constraints.chronicDiseases, value as ChronicDisease],
         },
       };
     });
@@ -55,12 +55,12 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
       <div className="nm-field">
         <label className="nm-label">Allergies</label>
         <div className="nm-check-grid">
-          {COMMON_ALLERGIES.map((item) => (
+          {INTOLERANCE_OPTIONS.map((item) => (
             <Checkbox
-              key={item}
-              label={item}
-              checked={data.constraints.allergies.includes(item)}
-              onChange={() => toggleArrayValue("allergies", item)}
+              key={item.value}
+              label={item.label}
+              checked={data.constraints.allergies.includes(item.value)}
+              onChange={() => toggleArrayValue("allergies", item.value)}
             />
           ))}
         </div>
@@ -144,7 +144,7 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
               <Checkbox
                 key={item.value}
                 label={item.label}
-                checked={data.constraints.chronicDiseases.includes(item.value as any)}
+                checked={data.constraints.chronicDiseases.includes(item.value as ChronicDisease)}
                 onChange={() => toggleDisease(item.value)}
               />
             ))}

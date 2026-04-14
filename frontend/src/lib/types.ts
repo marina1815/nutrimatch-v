@@ -47,6 +47,8 @@ export interface PreferencesInfo {
   likes: string[];
   dislikes: string[];
   mealStyles: string[];
+  diets: string[];
+  cuisines: string[];
   mealsPerDay: number | "";
 }
 
