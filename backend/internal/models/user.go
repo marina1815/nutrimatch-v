@@ -11,3 +11,6 @@ type User struct {
 	UpdatedAt    time.Time `gorm:"not null;default:now()"`
 }
 
+func (User) TableName() string {
+	return "identity.users"
+}

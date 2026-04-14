@@ -15,9 +15,10 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 
 // AuthService handles users and sessions.
 type AuthService struct {
-	Users    repository.UserRepository
-	Sessions repository.SessionRepository
-	Tokens   *security.TokenManager
+	Users          repository.UserRepository
+	Sessions       repository.SessionRepository
+	TxManager      repository.TxManager
+	Tokens         *security.TokenManager
 	PasswordParams security.Argon2Params
 }
 
@@ -27,11 +28,35 @@ func (s *AuthService) Register(ctx context.Context, user *models.User, rawPasswo
 		return "", time.Time{}, "", time.Time{}, err
 	}
 	user.PasswordHash = hash
-	if err := s.Users.Create(ctx, user); err != nil {
+
+	if s.TxManager == nil {
+		if err := s.Users.Create(ctx, user); err != nil {
+			return "", time.Time{}, "", time.Time{}, err
+		}
+		return s.createSession(ctx, s.Sessions, user.ID, "local", userAgent, ip)
+	}
+
+	var (
+		access     string
+		accessExp  time.Time
+		refresh    string
+		refreshExp time.Time
+	)
+
+	err = s.TxManager.WithinTransaction(ctx, func(repos repository.Repositories) error {
+		if err := repos.Users.Create(ctx, user); err != nil {
+			return err
+		}
+
+		var createErr error
+		access, accessExp, refresh, refreshExp, createErr = s.createSession(ctx, repos.Sessions, user.ID, "local", userAgent, ip)
+		return createErr
+	})
+	if err != nil {
 		return "", time.Time{}, "", time.Time{}, err
 	}
 
-	return s.createSession(ctx, user.ID, userAgent, ip)
+	return access, accessExp, refresh, refreshExp, nil
 }
 
 func (s *AuthService) Login(ctx context.Context, user *models.User, rawPassword string, userAgent, ip string) (string, time.Time, string, time.Time, error) {
@@ -40,7 +65,7 @@ func (s *AuthService) Login(ctx context.Context, user *models.User, rawPassword 
 		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
 	}
 
-	return s.createSession(ctx, user.ID, userAgent, ip)
+	return s.createSession(ctx, s.Sessions, user.ID, "local", userAgent, ip)
 }
 
 func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string, time.Time, string, time.Time, error) {
@@ -80,7 +105,11 @@ func (s *AuthService) Logout(ctx context.Context, refreshToken string) error {
 	return s.Sessions.Revoke(ctx, session.ID)
 }
 
-func (s *AuthService) createSession(ctx context.Context, userID, userAgent, ip string) (string, time.Time, string, time.Time, error) {
+func (s *AuthService) IssueSession(ctx context.Context, userID, authMethod, userAgent, ip string) (string, time.Time, string, time.Time, error) {
+	return s.createSession(ctx, s.Sessions, userID, authMethod, userAgent, ip)
+}
+
+func (s *AuthService) createSession(ctx context.Context, sessions repository.SessionRepository, userID, authMethod, userAgent, ip string) (string, time.Time, string, time.Time, error) {
 	sessionID := uuid.NewString()
 	access, accessExp, err := s.Tokens.NewAccessToken(userID, sessionID)
 	if err != nil {
@@ -95,12 +124,13 @@ func (s *AuthService) createSession(ctx context.Context, userID, userAgent, ip s
 	session := &models.Session{
 		ID:               sessionID,
 		UserID:           userID,
+		AuthMethod:       authMethod,
 		RefreshTokenHash: s.Tokens.HashRefreshToken(refresh),
 		ExpiresAt:        refreshExp,
 		UserAgent:        userAgent,
 		IP:               ip,
 	}
-	if err := s.Sessions.Create(ctx, session); err != nil {
+	if err := sessions.Create(ctx, session); err != nil {
 		return "", time.Time{}, "", time.Time{}, err
 	}
 

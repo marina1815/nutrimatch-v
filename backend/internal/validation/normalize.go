@@ -12,13 +12,18 @@ func NormalizeString(input string) string {
 
 func NormalizeList(values []string) []string {
 	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
 	for _, item := range values {
 		trimmed := strings.TrimSpace(item)
 		if trimmed == "" {
 			continue
 		}
-		out = append(out, strings.ToLower(trimmed))
+		normalized := strings.ToLower(trimmed)
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
 	}
 	return out
 }
-

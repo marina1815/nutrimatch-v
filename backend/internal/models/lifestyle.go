@@ -12,3 +12,6 @@ type Lifestyle struct {
 	UpdatedAt     time.Time `gorm:"not null;default:now()"`
 }
 
+func (Lifestyle) TableName() string {
+	return "health.lifestyles"
+}

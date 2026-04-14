@@ -8,15 +8,16 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 type TokenManager struct {
-	Secret       []byte
-	Issuer       string
-	Audience     string
-	AccessTTL    time.Duration
-	RefreshTTL   time.Duration
-	TokenPepper  []byte
+	Secret      []byte
+	Issuer      string
+	Audience    string
+	AccessTTL   time.Duration
+	RefreshTTL  time.Duration
+	TokenPepper []byte
 }
 
 type AccessClaims struct {
@@ -31,9 +32,11 @@ func (t *TokenManager) NewAccessToken(userID, sessionID string) (string, time.Ti
 	claims := AccessClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
+			ID:        uuid.NewString(),
 			Issuer:    t.Issuer,
 			Audience:  []string{t.Audience},
 			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(exp),
 		},
 		SessionID: sessionID,
@@ -45,9 +48,19 @@ func (t *TokenManager) NewAccessToken(userID, sessionID string) (string, time.Ti
 }
 
 func (t *TokenManager) ParseAccessToken(raw string) (*AccessClaims, error) {
-	parsed, err := jwt.ParseWithClaims(raw, &AccessClaims{}, func(token *jwt.Token) (any, error) {
-		return t.Secret, nil
-	})
+	parsed, err := jwt.ParseWithClaims(
+		raw,
+		&AccessClaims{},
+		func(token *jwt.Token) (any, error) {
+			return t.Secret, nil
+		},
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(t.Issuer),
+		jwt.WithAudience(t.Audience),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+		jwt.WithLeeway(30*time.Second),
+	)
 	if err != nil {
 		return nil, err
 	}

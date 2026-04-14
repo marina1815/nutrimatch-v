@@ -13,3 +13,6 @@ type Preferences struct {
 	UpdatedAt   time.Time   `gorm:"not null;default:now()"`
 }
 
+func (Preferences) TableName() string {
+	return "health.preferences"
+}

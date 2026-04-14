@@ -1,6 +1,7 @@
 package spoonacular
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -52,7 +53,7 @@ type Nutrient struct {
 	Unit   string  `json:"unit"`
 }
 
-func (c *Client) Search(opts SearchOptions) (*SearchResponse, error) {
+func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchResponse, error) {
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 10 * time.Second}
 	}
@@ -78,10 +79,11 @@ func (c *Client) Search(opts SearchOptions) (*SearchResponse, error) {
 		q.Set("intolerances", strings.Join(opts.Intolerances, ","))
 	}
 
-	req, err := http.NewRequest(http.MethodGet, endpoint+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

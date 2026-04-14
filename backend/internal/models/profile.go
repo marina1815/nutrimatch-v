@@ -15,3 +15,6 @@ type Profile struct {
 	UpdatedAt  time.Time `gorm:"not null;default:now()"`
 }
 
+func (Profile) TableName() string {
+	return "health.profiles"
+}

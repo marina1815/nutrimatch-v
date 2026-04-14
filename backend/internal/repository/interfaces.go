@@ -28,4 +28,54 @@ type ProfileRepository interface {
 	UpsertPreferences(ctx context.Context, preferences *models.Preferences) error
 	UpsertConstraints(ctx context.Context, constraints *models.Constraints) error
 	GetProfile(ctx context.Context, userID string) (*models.Profile, *models.Lifestyle, *models.Preferences, *models.Constraints, error)
+	ListProfileBundles(ctx context.Context, excludeUserID string, limit int) ([]ProfileBundle, error)
+	UpsertNutritionProfile(ctx context.Context, profile *models.NutritionProfile) error
+	GetNutritionProfile(ctx context.Context, userID string) (*models.NutritionProfile, error)
+}
+
+type MedicalRuleRepository interface {
+	ListActive(ctx context.Context) ([]models.MedicalRule, error)
+}
+
+type RecommendationTraceRepository interface {
+	CreateRun(ctx context.Context, run *models.RecommendationRun) error
+	ReplaceCandidates(ctx context.Context, runID string, candidates []*models.RecommendationCandidate) error
+	GetLatestRunByProfile(ctx context.Context, userID, profileID string) (*models.RecommendationRun, []*models.RecommendationCandidate, error)
+	GetCandidateByRecipeID(ctx context.Context, userID, profileID, recipeID string) (*models.RecommendationCandidate, error)
+}
+
+type AuditRepository interface {
+	Create(ctx context.Context, event *models.AuditEvent) error
+}
+
+type ExternalIdentityRepository interface {
+	GetByProviderSubject(ctx context.Context, provider, issuer, subject string) (*models.ExternalIdentity, error)
+	Create(ctx context.Context, identity *models.ExternalIdentity) error
+	UpdateLogin(ctx context.Context, id string, email string, emailVerified bool, loginAt time.Time) error
+}
+
+type ProfileBundle struct {
+	UserID            string
+	Age               int
+	ActivityLevel     string
+	Goal              string
+	MealStyles        []string
+	Likes             []string
+	Conditions        []string
+	ChronicDiseases   []string
+	HasChronicDisease bool
+}
+
+type Repositories struct {
+	Users              UserRepository
+	Profiles           ProfileRepository
+	Sessions           SessionRepository
+	MedicalRules       MedicalRuleRepository
+	RecommendationRuns RecommendationTraceRepository
+	Audit              AuditRepository
+	ExternalIdentities ExternalIdentityRepository
+}
+
+type TxManager interface {
+	WithinTransaction(ctx context.Context, fn func(Repositories) error) error
 }

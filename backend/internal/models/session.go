@@ -5,11 +5,15 @@ import "time"
 type Session struct {
 	ID               string     `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
 	UserID           string     `gorm:"type:uuid;index;not null"`
+	AuthMethod       string     `gorm:"not null;default:'local'"`
 	RefreshTokenHash string     `gorm:"uniqueIndex;not null"`
 	ExpiresAt        time.Time  `gorm:"not null"`
 	CreatedAt        time.Time  `gorm:"not null;default:now()"`
 	RevokedAt        *time.Time `gorm:"default:null"`
 	UserAgent        string     `gorm:"not null"`
-	IP              string     `gorm:"not null"`
+	IP               string     `gorm:"not null"`
 }
 
+func (Session) TableName() string {
+	return "identity.sessions"
+}

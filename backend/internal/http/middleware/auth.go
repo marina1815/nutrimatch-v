@@ -29,9 +29,14 @@ func AuthRequired(tokens *security.TokenManager, sessions repository.SessionRepo
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "session revoked"})
 			return
 		}
+		if session.UserID != claims.Subject {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "session subject mismatch"})
+			return
+		}
 
 		c.Set("user_id", claims.Subject)
 		c.Set("session_id", claims.SessionID)
+		c.Set("auth_method", session.AuthMethod)
 		c.Next()
 	}
 }

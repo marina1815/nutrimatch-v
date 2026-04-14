@@ -2,6 +2,7 @@ package googleai
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -36,7 +37,7 @@ type Candidate struct {
 	Content Content `json:"content"`
 }
 
-func (c *Client) GenerateText(prompt string) (string, error) {
+func (c *Client) GenerateText(ctx context.Context, prompt string) (string, error) {
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
@@ -51,10 +52,11 @@ func (c *Client) GenerateText(prompt string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(buf))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.HTTP.Do(req)

@@ -2,25 +2,29 @@ package main
 
 import (
 	"log"
+	"net/http"
+	"time"
 
 	"github.com/marina1815/nutrimatch/internal/clients/googleai"
 	"github.com/marina1815/nutrimatch/internal/clients/spoonacular"
 	"github.com/marina1815/nutrimatch/internal/config"
 	"github.com/marina1815/nutrimatch/internal/database"
+	"github.com/marina1815/nutrimatch/internal/http/dto"
 	"github.com/marina1815/nutrimatch/internal/http/handlers"
 	"github.com/marina1815/nutrimatch/internal/http/routes"
 	"github.com/marina1815/nutrimatch/internal/repository/gorm"
 	"github.com/marina1815/nutrimatch/internal/security"
 	"github.com/marina1815/nutrimatch/internal/services"
+	"golang.org/x/time/rate"
 )
 
 func main() {
 	cfg := config.Load()
-	if cfg.DBURL == "" {
-		log.Fatal("DATABASE_URL is required")
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
 	}
 
-	db, err := database.Connect(cfg.DBURL)
+	db, err := database.Connect(cfg.DBURL, cfg.AppEnv)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -28,6 +32,11 @@ func main() {
 	userRepo := gormrepo.NewUserRepository(db)
 	profileRepo := gormrepo.NewProfileRepository(db)
 	sessionRepo := gormrepo.NewSessionRepository(db)
+	medicalRuleRepo := gormrepo.NewMedicalRuleRepository(db)
+	recommendationTraceRepo := gormrepo.NewRecommendationTraceRepository(db)
+	auditRepo := gormrepo.NewAuditRepository(db)
+	externalIdentityRepo := gormrepo.NewExternalIdentityRepository(db)
+	txManager := gormrepo.NewTxManager(db)
 
 	tokens := &security.TokenManager{
 		Secret:      []byte(cfg.JWTSecret),
@@ -37,11 +46,26 @@ func main() {
 		RefreshTTL:  cfg.RefreshTokenTTL,
 		TokenPepper: []byte(cfg.RefreshTokenPepper),
 	}
+	csrfManager := &security.CSRFManager{
+		Secret: []byte(cfg.JWTSecret),
+		TTL:    cfg.CSRFTTL,
+	}
+	stateManager := &security.StateManager{
+		Secret: []byte(cfg.JWTSecret),
+		TTL:    cfg.CSRFTTL,
+	}
+	healthCipher, err := security.NewCipher(cfg.HealthDataKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	recommendationCache := security.NewTTLCache[*dto.RecommendationResponse](3 * time.Minute)
+	recommendationQuota := security.NewQuotaManager(rate.Every(2*time.Second), 3)
 
 	authService := &services.AuthService{
-		Users:          userRepo,
-		Sessions:       sessionRepo,
-		Tokens:         tokens,
+		Users:     userRepo,
+		Sessions:  sessionRepo,
+		TxManager: txManager,
+		Tokens:    tokens,
 		PasswordParams: security.Argon2Params{
 			Time:       cfg.Argon2Time,
 			Memory:     cfg.Argon2Memory,
@@ -50,11 +74,23 @@ func main() {
 			SaltLength: cfg.Argon2SaltLength,
 		},
 	}
+	auditService := &services.AuditService{Repo: auditRepo}
+	accessPolicyService := &services.AccessPolicyService{}
+	nutritionProfileService := &services.NutritionProfileService{
+		Profiles:     profileRepo,
+		MedicalRules: medicalRuleRepo,
+		TxManager:    txManager,
+	}
 
 	profileService := &services.ProfileService{
-		Profiles: profileRepo,
-		Users:    userRepo,
+		Profiles:     profileRepo,
+		Users:        userRepo,
+		TxManager:    txManager,
+		Cipher:       healthCipher,
+		Nutrition:    nutritionProfileService,
+		MedicalRules: medicalRuleRepo,
 	}
+	similarityService := &services.SimilarityService{Profiles: profileRepo}
 
 	recipeClient := &spoonacular.Client{
 		BaseURL: cfg.SpoonacularBaseURL,
@@ -67,24 +103,58 @@ func main() {
 	}
 
 	recommendationService := &services.RecommendationService{
-		Profiles: profileService,
-		Recipes:  recipeClient,
-		AI:       aiClient,
+		Profiles:     profileService,
+		Recipes:      recipeClient,
+		AI:           aiClient,
+		MedicalRules: medicalRuleRepo,
+		Traces:       recommendationTraceRepo,
+		Similarity:   similarityService,
+		Quota:        recommendationQuota,
+		Cache:        recommendationCache,
+		TxManager:    txManager,
+	}
+	oidcService := &services.OIDCService{
+		Config:       cfg,
+		StateManager: stateManager,
+		Users:        userRepo,
+		External:     externalIdentityRepo,
+		TxManager:    txManager,
+		Auth:         authService,
 	}
 
 	authHandler := &handlers.AuthHandler{
 		Cfg:   cfg,
 		Auth:  authService,
 		Users: userRepo,
+		CSRF:  csrfManager,
+		OIDC:  oidcService,
+		Audit: auditService,
 	}
 
-	profileHandler := &handlers.ProfileHandler{Profiles: profileService}
-	recHandler := &handlers.RecommendationHandler{Service: recommendationService}
+	profileHandler := &handlers.ProfileHandler{
+		Profiles: profileService,
+		Audit:    auditService,
+		Access:   accessPolicyService,
+	}
+	recHandler := &handlers.RecommendationHandler{
+		Service: recommendationService,
+		Audit:   auditService,
+		Access:  accessPolicyService,
+	}
 	healthHandler := &handlers.HealthHandler{}
 
-	router := routes.SetupRouter(cfg, tokens, sessionRepo, authHandler, profileHandler, recHandler, healthHandler)
-	if err := router.Run(":" + cfg.AppPort); err != nil {
+	router := routes.SetupRouter(cfg, tokens, csrfManager, sessionRepo, authHandler, profileHandler, recHandler, healthHandler)
+	server := &http.Server{
+		Addr:              ":" + cfg.AppPort,
+		Handler:           router,
+		MaxHeaderBytes:    1 << 20,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
-
