@@ -1,27 +1,31 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
-// Handle CSRF persistence
+// Read the CSRF token directly from the cookie (not HttpOnly, so JS can access it).
+// This ensures we always use the latest token even after login/register refreshes it.
+function readCSRFFromCookie(): string {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(/(?:^|;\s*)nm_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+// Ensure we have a CSRF token. First checks the cookie, then fetches a new one.
 async function ensureCSRF(): Promise<{ name: string; token: string }> {
   if (typeof window === "undefined") return { name: "X-CSRF-Token", token: "" };
-  
-  const saved = sessionStorage.getItem("nutrimatch-csrf");
-  const savedHeader = sessionStorage.getItem("nutrimatch-csrf-header") || "X-CSRF-Token";
-  
-  if (saved) {
-    return { name: savedHeader, token: saved };
+
+  // Always prefer the cookie value — it's the source of truth
+  const cookieToken = readCSRFFromCookie();
+  if (cookieToken) {
+    return { name: "X-CSRF-Token", token: cookieToken };
   }
 
-  // Fetch new token with credentials to get the cookie
+  // No cookie yet — fetch a fresh one
   const res = await fetch(`${API_URL}/api/v1/auth/csrf`, {
-    credentials: "include"
+    credentials: "include",
   });
   if (!res.ok) throw new Error("Failed to initialize security context (CSRF)");
-  
+
   const data = await res.json();
-  sessionStorage.setItem("nutrimatch-csrf", data.csrf_token);
-  sessionStorage.setItem("nutrimatch-csrf-header", data.header_name);
-  
-  return { name: data.header_name, token: data.csrf_token };
+  return { name: data.header_name || "X-CSRF-Token", token: data.csrf_token };
 }
 
 async function getHeaders(includeAuth = true) {
@@ -63,7 +67,14 @@ export async function loginUser(payload: { email: string; password: string }) {
     const error = await res.json().catch(() => ({}));
     throw new Error(error.error || error.message || "Login failed");
   }
-  return res.json();
+  const data = await res.json();
+
+  // Store the access token for subsequent authenticated requests
+  if (data.access_token && typeof window !== "undefined") {
+    localStorage.setItem("nutrimatch-token", data.access_token);
+  }
+
+  return data;
 }
 
 export async function registerUser(payload: {
@@ -83,7 +94,14 @@ export async function registerUser(payload: {
     const error = await res.json().catch(() => ({}));
     throw new Error(error.error || error.message || "Registration failed");
   }
-  return res.json();
+  const data = await res.json();
+
+  // Store the access token for subsequent authenticated requests
+  if (data.access_token && typeof window !== "undefined") {
+    localStorage.setItem("nutrimatch-token", data.access_token);
+  }
+
+  return data;
 }
 
 export async function saveProfile(profile: unknown) {
@@ -114,6 +132,22 @@ export async function getRecommendations(profileId: string) {
     headers,
     credentials: "include",
   });
-  if (!res.ok) throw new Error("Failed to fetch recommendations");
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || error.message || `Recommendations failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function getProfile() {
+  const headers = await getHeaders(true);
+  const res = await fetch(`${API_URL}/api/v1/profile`, {
+    headers,
+    credentials: "include",
+  });
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    throw new Error("Failed to fetch profile");
+  }
   return res.json();
 }

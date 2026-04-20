@@ -26,6 +26,8 @@ const defaultProfile: UserProfile = {
     likes: [],
     dislikes: [],
     mealStyles: [],
+    diets: [],
+    cuisines: [],
     mealsPerDay: "",
   },
   constraints: {
@@ -55,6 +57,8 @@ function mergeWithDefaultProfile(saved: Partial<UserProfile>): UserProfile {
       likes: saved.preferences?.likes ?? [],
       dislikes: saved.preferences?.dislikes ?? [],
       mealStyles: saved.preferences?.mealStyles ?? [],
+      diets: saved.preferences?.diets ?? [],
+      cuisines: saved.preferences?.cuisines ?? [],
       mealsPerDay: saved.preferences?.mealsPerDay ?? "",
     },
     constraints: {
@@ -75,6 +79,8 @@ export function useProfileForm() {
   const [step, setStep] = useState(0);
   const [data, setData] = useState<UserProfile>(defaultProfile);
   const [errors, setErrors] = useState<Record<string, any>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -121,6 +127,10 @@ export function useProfileForm() {
     data,
     setData,
     errors,
+    isSubmitting,
+    submitError,
+    setIsSubmitting,
+    setSubmitError,
     next,
     back,
     reset,

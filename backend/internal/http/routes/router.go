@@ -57,40 +57,34 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *securi
 	r.GET("/api/v1/health", health.Ping)
 
 	v1 := r.Group("/api/v1")
-	v1.Use(func(c *gin.Context) {
-		if _, exists := c.Get("user_id"); !exists {
-			// In development bypass mode, try to find the first user to act as
-			user, err := auth.Users.GetByEmail(c.Request.Context(), "test-new@example.com")
-			if err == nil {
-				c.Set("user_id", user.ID)
-				c.Set("session_id", "00000000-0000-0000-0000-000000000000")
-				c.Set("auth_method", "local")
-			} else {
-				// Fallback to any user if test user not found
-				// This is just for verification purposes as requested
-			}
-		}
-		c.Next()
-	})
 	{
-		// authOriginGuard := middleware.RequireTrustedOrigin(cfg.TrustedOrigins)
-		// csrfGuard := middleware.RequireCSRF(cfg, csrf)
+		authOriginGuard := middleware.RequireTrustedOrigin(cfg.TrustedOrigins)
+		csrfGuard := middleware.RequireCSRF(cfg, csrf)
+
+		// Public auth routes (no auth/csrf required)
 		v1.GET("/auth/csrf", auth.CSRFToken)
 		v1.GET("/auth/oidc/login", auth.OIDCLogin)
 		v1.GET("/auth/oidc/callback", auth.OIDCCallback)
-		v1.POST("/auth/register", auth.Register)
-		v1.POST("/auth/login", auth.Login)
+
+		// Auth routes with origin guard (middleware BEFORE handler)
+		v1.POST("/auth/register", authOriginGuard, auth.Register)
+		v1.POST("/auth/login", authOriginGuard, auth.Login)
 		v1.POST("/auth/refresh", auth.Refresh)
 		v1.POST("/auth/logout", auth.Logout)
 
+		// Protected routes - require JWT auth
 		protected := v1.Group("")
-		// protected.Use(middleware.AuthRequired(tokens, sessions))
-		protected.POST("/profile", profiles.Upsert)
+		protected.Use(middleware.AuthRequired(tokens, sessions))
+
+		// GET routes: auth required, no CSRF needed (read-only)
 		protected.GET("/profile", profiles.Get)
 		protected.GET("/profile/nutrition", profiles.GetNutrition)
 		protected.GET("/recommendations/:profileId", recs.Get)
 		protected.GET("/recommendations/:profileId/trace", recs.Trace)
 		protected.GET("/recommendations/:profileId/explanation", recs.Explain)
+
+		// POST routes: auth + CSRF required (state-changing)
+		protected.POST("/profile", csrfGuard, profiles.Upsert)
 	}
 
 	return r

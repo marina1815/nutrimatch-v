@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getHealthMetrics } from "@/lib/health";
 import { UserProfile } from "@/lib/types";
@@ -17,15 +17,34 @@ export default function ProfilePage() {
   const [isEditing, setIsEditing] = useState(false);
   const [errors, setErrors] = useState<ProfileErrors>({});
   const [isSaving, setIsSaving] = useState(false);
+  // Snapshot du profil original avant modification — pour annuler
+  const originalProfile = useRef<UserProfile | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem("nutrimatch-profile");
     if (saved) {
-      setProfile(JSON.parse(saved));
+      const parsed = JSON.parse(saved) as UserProfile;
+      setProfile(parsed);
+      originalProfile.current = parsed;
     }
   }, []);
 
   const metrics = profile ? getHealthMetrics(profile) : null;
+
+  const handleStartEdit = () => {
+    // Prendre un snapshot avant de modifier
+    originalProfile.current = profile ? JSON.parse(JSON.stringify(profile)) : null;
+    setIsEditing(true);
+  };
+
+  const handleCancel = () => {
+    // Restaurer le snapshot original — toutes les modifications sont annulées
+    if (originalProfile.current) {
+      setProfile(originalProfile.current);
+    }
+    setIsEditing(false);
+    setErrors({});
+  };
 
   const handleSave = async () => {
     if (!profile) return;
@@ -41,6 +60,7 @@ export default function ProfilePage() {
     try {
       await saveProfile(profile);
       localStorage.setItem("nutrimatch-profile", JSON.stringify(profile));
+      originalProfile.current = JSON.parse(JSON.stringify(profile));
       setIsEditing(false);
       setErrors({});
       alert("Profil mis à jour avec succès !");
@@ -71,32 +91,50 @@ export default function ProfilePage() {
       <main className="nm-page">
         <div className="nm-card">
           <h1 className="nm-title">Modifier mon profil</h1>
-          <p className="nm-sub">Mettez à jour vos informations personnelles et vos préférences.</p>
-          
+          <p className="nm-sub">
+            Vos informations actuelles sont pré-remplies — modifiez uniquement ce que vous souhaitez changer.
+          </p>
+
           <div className="nm-stack" style={{ gap: "2.5rem" }}>
             <section className="nm-stack">
               <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>1. Informations personnelles</h2>
-              <PersonalInfoStep data={profile} setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>} errors={errors.personal} />
+              <PersonalInfoStep
+                data={profile}
+                setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>}
+                errors={errors.personal}
+              />
             </section>
 
             <section className="nm-stack">
               <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>2. Mode de vie</h2>
-              <LifestyleStep data={profile} setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>} errors={errors.lifestyle} />
+              <LifestyleStep
+                data={profile}
+                setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>}
+                errors={errors.lifestyle}
+              />
             </section>
 
             <section className="nm-stack">
               <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>3. Préférences</h2>
-              <PreferencesStep data={profile} setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>} errors={errors.preferences} />
+              <PreferencesStep
+                data={profile}
+                setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>}
+                errors={errors.preferences}
+              />
             </section>
 
             <section className="nm-stack">
-              <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>4. Santé & contraintes</h2>
-              <ConstraintsStep data={profile} setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>} errors={errors.constraints} />
+              <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>4. Santé &amp; contraintes</h2>
+              <ConstraintsStep
+                data={profile}
+                setData={setProfile as React.Dispatch<React.SetStateAction<UserProfile>>}
+                errors={errors.constraints}
+              />
             </section>
           </div>
 
           <div className="nm-inline-actions" style={{ marginTop: "2rem" }}>
-            <Button variant="secondary" onClick={() => setIsEditing(false)}>
+            <Button variant="secondary" onClick={handleCancel}>
               Annuler
             </Button>
             <Button onClick={handleSave} disabled={isSaving}>
@@ -139,7 +177,7 @@ export default function ProfilePage() {
         )}
 
         <div className="nm-inline-actions">
-          <Button variant="secondary" onClick={() => setIsEditing(true)}>
+          <Button variant="secondary" onClick={handleStartEdit}>
             Modifier le profil
           </Button>
           <Link href="/results" className="nm-link-btn nm-link-btn-primary">

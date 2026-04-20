@@ -51,10 +51,13 @@ export default function RegisterPage() {
         email: form.email,
         password: form.password,
       }));
+      // Clear any previous user's profile data before navigating
+      localStorage.removeItem("nutrimatch-profile");
       localStorage.setItem("nutrimatch-token", data.access_token);
       window.location.href = "/onboarding";
-    } catch (err: any) {
-      setErrors({ email: err.message || "Registration failed. Please try again." });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Registration failed. Please try again.";
+      setErrors({ email: message });
     } finally {
       setLoading(false);
     }

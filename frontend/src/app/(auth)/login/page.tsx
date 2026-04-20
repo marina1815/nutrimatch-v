@@ -27,10 +27,13 @@ export default function LoginPage() {
 
     try {
       const data = await import("@/lib/api").then((mod) => mod.loginUser(form));
+      // Clear any previous user's profile data before navigating
+      localStorage.removeItem("nutrimatch-profile");
       localStorage.setItem("nutrimatch-token", data.access_token);
       window.location.href = "/onboarding";
-    } catch (err: any) {
-      setErrors({ email: err.message || "Login failed. Check your credentials." });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Login failed. Check your credentials.";
+      setErrors({ email: message });
     } finally {
       setLoading(false);
     }
