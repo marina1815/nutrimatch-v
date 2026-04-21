@@ -58,6 +58,11 @@ type profileRequest struct {
 	} `json:"constraints" validate:"required"`
 }
 
+const (
+	maxFlexibleSignalCount = 40
+	maxProfileTextBudget   = 1200
+)
+
 func (h *ProfileHandler) Upsert(c *gin.Context) {
 	userID := c.GetString("user_id")
 	if !allowAccess(c, h.Access, "write", services.AccessResource{
@@ -81,7 +86,7 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "invalid_payload"},
 		})
-		respondError(c, http.StatusBadRequest, "invalid payload")
+		respondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", "invalid payload")
 		return
 	}
 
@@ -93,7 +98,7 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "validation_failed"},
 		})
-		respondError(c, http.StatusBadRequest, "validation failed")
+		respondError(c, http.StatusBadRequest, "VALIDATION_FAILED", "validation failed")
 		return
 	}
 	if req.Constraints.HasChronicDisease && len(req.Constraints.ChronicDiseases) == 0 {
@@ -104,7 +109,7 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "missing_chronic_diseases"},
 		})
-		respondError(c, http.StatusBadRequest, "validation failed")
+		respondError(c, http.StatusBadRequest, "VALIDATION_FAILED", "validation failed")
 		return
 	}
 	if req.Constraints.TakesMedication && validation.NormalizeString(req.Constraints.Medications) == "" {
@@ -115,7 +120,18 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "missing_medications"},
 		})
-		respondError(c, http.StatusBadRequest, "validation failed")
+		respondError(c, http.StatusBadRequest, "VALIDATION_FAILED", "validation failed")
+		return
+	}
+	if reason := validateProfileConsistency(req); reason != "" {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    "profile.upsert",
+			ResourceType: "health.profile",
+			Outcome:      "denied",
+			Details:      map[string]any{"reason": reason},
+		})
+		respondError(c, http.StatusBadRequest, "PROFILE_INCONSISTENT", "validation failed")
 		return
 	}
 	if hasCanonicalMismatch(req.Preferences.MealStyles, taxonomy.CanonicalizeMealStyleList(req.Preferences.MealStyles)) ||
@@ -132,7 +148,7 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "unsupported_canonical_value"},
 		})
-		respondError(c, http.StatusBadRequest, "validation failed")
+		respondError(c, http.StatusBadRequest, "VALIDATION_FAILED", "validation failed")
 		return
 	}
 
@@ -177,7 +193,7 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			Outcome:      "failed",
 			Details:      map[string]any{"reason": "profile_update_failed"},
 		})
-		respondError(c, http.StatusInternalServerError, "profile update failed")
+		respondError(c, http.StatusInternalServerError, "PROFILE_UPDATE_FAILED", "profile update failed")
 		return
 	}
 
@@ -190,7 +206,7 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			Outcome:      "failed",
 			Details:      map[string]any{"reason": "profile_readback_failed"},
 		})
-		respondError(c, http.StatusInternalServerError, "profile update failed")
+		respondError(c, http.StatusInternalServerError, "PROFILE_UPDATE_FAILED", "profile update failed")
 		return
 	}
 
@@ -205,11 +221,12 @@ func (h *ProfileHandler) Upsert(c *gin.Context) {
 			"hasChronicDisease": constraints.HasChronicDisease,
 		},
 	})
-	c.JSON(http.StatusOK, gin.H{"profileId": savedProfile.ID})
+	respondOK(c, http.StatusOK, gin.H{"profileId": savedProfile.ID})
 }
 
 func (h *ProfileHandler) Get(c *gin.Context) {
 	userID := c.GetString("user_id")
+	includeSensitive := c.Query("includeSensitive") == "true"
 	if !allowAccess(c, h.Access, "read", services.AccessResource{
 		OwnerUserID: userID,
 		Sensitivity: "health_profile",
@@ -231,7 +248,7 @@ func (h *ProfileHandler) Get(c *gin.Context) {
 			ResourceType: "health.profile",
 			Outcome:      "failed",
 		})
-		respondError(c, http.StatusNotFound, "profile not found")
+		respondError(c, http.StatusNotFound, "PROFILE_NOT_FOUND", "profile not found")
 		return
 	}
 
@@ -240,8 +257,19 @@ func (h *ProfileHandler) Get(c *gin.Context) {
 		EventType:    "profile.read",
 		ResourceType: "health.profile",
 		ResourceID:   profile.ID,
+		Details: map[string]any{
+			"includeSensitive": includeSensitive,
+		},
 	})
-	c.JSON(http.StatusOK, gin.H{
+
+	medications := ""
+	medicationsRedacted := false
+	if includeSensitive {
+		medications = constraints.Medications
+	} else if constraints.TakesMedication && validation.NormalizeString(constraints.Medications) != "" {
+		medicationsRedacted = true
+	}
+	respondOK(c, http.StatusOK, gin.H{
 		"profileId": profile.ID,
 		"personal": gin.H{
 			"fullName":   fullName,
@@ -274,7 +302,8 @@ func (h *ProfileHandler) Get(c *gin.Context) {
 			"hasChronicDisease":   constraints.HasChronicDisease,
 			"chronicDiseases":     constraints.ChronicDiseases,
 			"takesMedication":     constraints.TakesMedication,
-			"medications":         constraints.Medications,
+			"medications":         medications,
+			"medicationsRedacted": medicationsRedacted,
 		},
 	})
 }
@@ -302,7 +331,7 @@ func (h *ProfileHandler) GetNutrition(c *gin.Context) {
 			ResourceType: "health.nutrition_profile",
 			Outcome:      "failed",
 		})
-		respondError(c, http.StatusNotFound, "nutrition profile not found")
+		respondError(c, http.StatusNotFound, "NUTRITION_PROFILE_NOT_FOUND", "nutrition profile not found")
 		return
 	}
 
@@ -312,7 +341,7 @@ func (h *ProfileHandler) GetNutrition(c *gin.Context) {
 		ResourceType: "health.nutrition_profile",
 		ResourceID:   nutritionProfile.ID,
 	})
-	c.JSON(http.StatusOK, dto.NutritionProfileResponse{
+	respondOK(c, http.StatusOK, dto.NutritionProfileResponse{
 		ProfileID:             nutritionProfile.ProfileID,
 		BMI:                   nutritionProfile.BMI,
 		BMICategory:           nutritionProfile.BMICategory,
@@ -337,7 +366,7 @@ func (h *ProfileHandler) GetNutrition(c *gin.Context) {
 
 func (h *ProfileHandler) SuggestIngredients(c *gin.Context) {
 	if h.Ingredients == nil {
-		c.JSON(http.StatusOK, gin.H{"items": []string{}})
+		respondOK(c, http.StatusOK, gin.H{"items": []string{}})
 		return
 	}
 
@@ -371,7 +400,7 @@ func (h *ProfileHandler) SuggestIngredients(c *gin.Context) {
 			ResourceType: "catalog.ingredient",
 			Outcome:      "failed",
 		})
-		respondError(c, http.StatusBadGateway, "ingredient suggestion unavailable")
+		respondError(c, http.StatusBadGateway, "INGREDIENT_SUGGESTION_UNAVAILABLE", "ingredient suggestion unavailable")
 		return
 	}
 
@@ -385,9 +414,73 @@ func (h *ProfileHandler) SuggestIngredients(c *gin.Context) {
 			"resultCount": len(items),
 		},
 	})
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	respondOK(c, http.StatusOK, gin.H{"items": items})
 }
 
 func hasCanonicalMismatch(input []string, canonical []string) bool {
 	return len(validation.NormalizeList(input)) != len(canonical)
+}
+
+func validateProfileConsistency(req profileRequest) string {
+	likes := validation.NormalizeList(req.Preferences.Likes)
+	dislikes := validation.NormalizeList(req.Preferences.Dislikes)
+	excludedIngredients := validation.NormalizeList(req.Constraints.ExcludedIngredients)
+	preferredCuisines := taxonomy.CanonicalizeCuisineList(req.Preferences.PreferredCuisines)
+	excludedCuisines := taxonomy.CanonicalizeCuisineList(req.Preferences.ExcludedCuisines)
+	chronicDiseases := taxonomy.CanonicalizeConditionList(req.Constraints.ChronicDiseases)
+	medications := validation.NormalizeString(req.Constraints.Medications)
+
+	switch {
+	case hasOverlap(likes, dislikes):
+		return "likes_dislikes_overlap"
+	case hasOverlap(likes, excludedIngredients):
+		return "likes_excluded_overlap"
+	case hasOverlap(preferredCuisines, excludedCuisines):
+		return "preferred_excluded_cuisines_overlap"
+	case !req.Constraints.HasChronicDisease && len(chronicDiseases) > 0:
+		return "unexpected_chronic_diseases"
+	case !req.Constraints.TakesMedication && medications != "":
+		return "unexpected_medications"
+	}
+
+	flexibleSignalCount := len(likes) + len(dislikes) + len(excludedIngredients)
+	if flexibleSignalCount > maxFlexibleSignalCount {
+		return "payload_too_complex"
+	}
+
+	textBudget := len(validation.NormalizeString(req.Personal.FullName)) +
+		len(validation.NormalizeString(req.Personal.Profession)) +
+		len(validation.NormalizeString(req.Personal.City)) +
+		len(medications)
+	for _, item := range likes {
+		textBudget += len(item)
+	}
+	for _, item := range dislikes {
+		textBudget += len(item)
+	}
+	for _, item := range excludedIngredients {
+		textBudget += len(item)
+	}
+	if textBudget > maxProfileTextBudget {
+		return "payload_too_large"
+	}
+
+	return ""
+}
+
+func hasOverlap(left, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+
+	lookup := make(map[string]struct{}, len(left))
+	for _, item := range left {
+		lookup[item] = struct{}{}
+	}
+	for _, item := range right {
+		if _, exists := lookup[item]; exists {
+			return true
+		}
+	}
+	return false
 }

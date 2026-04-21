@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,9 +18,12 @@ import (
 )
 
 type AuthHandler struct {
-	Cfg   *config.Config
-	Auth  *services.AuthService
-	Users repository.UserRepository
+	Cfg      *config.Config
+	Auth     *services.AuthService
+	Users    repository.UserRepository
+	Profiles interface {
+		Get(ctx context.Context, userID string) (*models.Profile, *models.Lifestyle, *models.Preferences, *models.Constraints, string, error)
+	}
 	CSRF  *security.CSRFManager
 	OIDC  *services.OIDCService
 	Audit *services.AuditService
@@ -45,7 +49,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "invalid_payload"},
 		})
-		respondError(c, http.StatusBadRequest, "invalid payload")
+		respondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", "invalid payload")
 		return
 	}
 
@@ -59,7 +63,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "validation_failed"},
 		})
-		respondError(c, http.StatusBadRequest, "validation failed")
+		respondError(c, http.StatusBadRequest, "VALIDATION_FAILED", "validation failed")
 		return
 	}
 
@@ -76,7 +80,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			Outcome:      "failed",
 			Details:      map[string]any{"reason": "registration_failed"},
 		})
-		respondError(c, http.StatusBadRequest, "register failed")
+		respondError(c, http.StatusBadRequest, "REGISTER_FAILED", "register failed")
 		return
 	}
 
@@ -87,7 +91,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		ResourceType: "identity.user",
 		ResourceID:   user.ID,
 	}))
-	c.JSON(http.StatusOK, tokenResponse(access, accessExp))
+	respondOK(c, http.StatusOK, tokenResponse(access, accessExp))
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -99,7 +103,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "invalid_payload"},
 		})
-		respondError(c, http.StatusBadRequest, "invalid payload")
+		respondError(c, http.StatusBadRequest, "INVALID_PAYLOAD", "invalid payload")
 		return
 	}
 
@@ -111,7 +115,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "validation_failed"},
 		})
-		respondError(c, http.StatusBadRequest, "validation failed")
+		respondError(c, http.StatusBadRequest, "VALIDATION_FAILED", "validation failed")
 		return
 	}
 
@@ -131,7 +135,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": reason},
 		})
-		respondError(c, status, errorMessage)
+		code := "INVALID_CREDENTIALS"
+		if err == services.ErrAuthTemporarilyBlocked {
+			code = "AUTH_TEMPORARILY_BLOCKED"
+		}
+		respondError(c, status, code, errorMessage)
 		return
 	}
 
@@ -141,7 +149,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		EventType:    "auth.login",
 		ResourceType: "identity.session",
 	}))
-	c.JSON(http.StatusOK, tokenResponse(access, accessExp))
+	respondOK(c, http.StatusOK, tokenResponse(access, accessExp))
 }
 
 func (h *AuthHandler) Refresh(c *gin.Context) {
@@ -153,7 +161,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "missing_refresh_cookie"},
 		})
-		respondError(c, http.StatusUnauthorized, "missing refresh token")
+		respondError(c, http.StatusUnauthorized, "MISSING_REFRESH_TOKEN", "missing refresh token")
 		return
 	}
 
@@ -165,7 +173,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "invalid_refresh_token"},
 		})
-		respondError(c, http.StatusUnauthorized, "invalid refresh token")
+		respondError(c, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "invalid refresh token")
 		return
 	}
 
@@ -175,7 +183,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		EventType:    "auth.refresh",
 		ResourceType: "identity.session",
 	}))
-	c.JSON(http.StatusOK, tokenResponse(access, accessExp))
+	respondOK(c, http.StatusOK, tokenResponse(access, accessExp))
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
@@ -187,7 +195,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "missing_refresh_cookie"},
 		})
-		respondError(c, http.StatusUnauthorized, "missing refresh token")
+		respondError(c, http.StatusUnauthorized, "MISSING_REFRESH_TOKEN", "missing refresh token")
 		return
 	}
 
@@ -198,7 +206,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 			Outcome:      "failed",
 			Details:      map[string]any{"reason": "logout_failed"},
 		})
-		respondError(c, http.StatusUnauthorized, "invalid refresh token")
+		respondError(c, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "invalid refresh token")
 		return
 	}
 	clearRefreshCookie(c, h.Cfg)
@@ -207,12 +215,12 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		EventType:    "auth.logout",
 		ResourceType: "identity.session",
 	})
-	c.Status(http.StatusNoContent)
+	respondNoContent(c)
 }
 
 func (h *AuthHandler) CSRFToken(c *gin.Context) {
 	if h.CSRF == nil {
-		respondError(c, http.StatusServiceUnavailable, "csrf unavailable")
+		respondError(c, http.StatusServiceUnavailable, "CSRF_UNAVAILABLE", "csrf unavailable")
 		return
 	}
 
@@ -223,7 +231,7 @@ func (h *AuthHandler) CSRFToken(c *gin.Context) {
 			ResourceType: "identity.csrf",
 			Outcome:      "failed",
 		})
-		respondError(c, http.StatusInternalServerError, "csrf issue failed")
+		respondError(c, http.StatusInternalServerError, "CSRF_ISSUE_FAILED", "csrf issue failed")
 		return
 	}
 	setCSRFCookie(c, h.Cfg, token, time.Now().Add(h.Cfg.CSRFTTL))
@@ -231,12 +239,12 @@ func (h *AuthHandler) CSRFToken(c *gin.Context) {
 		EventType:    "auth.csrf.issue",
 		ResourceType: "identity.csrf",
 	})
-	c.JSON(http.StatusOK, gin.H{"csrf_token": token, "header_name": h.Cfg.CSRFHeaderName})
+	respondOK(c, http.StatusOK, gin.H{"csrf_token": token, "header_name": h.Cfg.CSRFHeaderName})
 }
 
 func (h *AuthHandler) OIDCLogin(c *gin.Context) {
 	if h.OIDC == nil || !h.OIDC.Enabled() {
-		respondError(c, http.StatusServiceUnavailable, "oidc unavailable")
+		respondError(c, http.StatusServiceUnavailable, "OIDC_UNAVAILABLE", "oidc unavailable")
 		return
 	}
 
@@ -248,7 +256,7 @@ func (h *AuthHandler) OIDCLogin(c *gin.Context) {
 			Outcome:      "failed",
 			Details:      map[string]any{"provider": h.Cfg.OIDCProviderName},
 		})
-		respondError(c, http.StatusInternalServerError, "oidc init failed")
+		respondError(c, http.StatusInternalServerError, "OIDC_INIT_FAILED", "oidc init failed")
 		return
 	}
 	setOIDCCookie(c, h.Cfg, signedState, time.Now().Add(h.Cfg.CSRFTTL))
@@ -262,13 +270,13 @@ func (h *AuthHandler) OIDCLogin(c *gin.Context) {
 
 func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 	if h.OIDC == nil || !h.OIDC.Enabled() {
-		respondError(c, http.StatusServiceUnavailable, "oidc unavailable")
+		respondError(c, http.StatusServiceUnavailable, "OIDC_UNAVAILABLE", "oidc unavailable")
 		return
 	}
 
 	stateCookie, err := c.Cookie(h.Cfg.CookieNameOIDC)
 	if err != nil {
-		respondError(c, http.StatusUnauthorized, "missing oidc state")
+		respondError(c, http.StatusUnauthorized, "MISSING_OIDC_STATE", "missing oidc state")
 		return
 	}
 
@@ -288,7 +296,7 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 			Outcome:      "denied",
 			Details:      map[string]any{"reason": "callback_failed", "provider": h.Cfg.OIDCProviderName},
 		})
-		respondError(c, http.StatusUnauthorized, "oidc callback failed")
+		respondError(c, http.StatusUnauthorized, "OIDC_CALLBACK_FAILED", "oidc callback failed")
 		return
 	}
 
@@ -309,6 +317,47 @@ func (h *AuthHandler) OIDCCallback(c *gin.Context) {
 		accessExp.Format(time.RFC3339),
 	)
 	c.Redirect(http.StatusFound, target)
+}
+
+func (h *AuthHandler) WhoAmI(c *gin.Context) {
+	userID := c.GetString("user_id")
+	user, err := h.Users.GetByID(c.Request.Context(), userID)
+	if err != nil {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    "auth.whoami",
+			ResourceType: "identity.user",
+			Outcome:      "failed",
+		})
+		respondError(c, http.StatusNotFound, "USER_NOT_FOUND", "user not found")
+		return
+	}
+
+	hasProfile := false
+	profileID := ""
+	if h.Profiles != nil {
+		profile, _, _, _, _, profileErr := h.Profiles.Get(c.Request.Context(), userID)
+		if profileErr == nil && profile != nil {
+			hasProfile = true
+			profileID = profile.ID
+		}
+	}
+
+	recordAudit(c, h.Audit, services.AuditRecord{
+		UserID:       userID,
+		EventType:    "auth.whoami",
+		ResourceType: "identity.user",
+		ResourceID:   user.ID,
+	})
+	respondOK(c, http.StatusOK, gin.H{
+		"userId":     user.ID,
+		"email":      user.Email,
+		"fullName":   user.FullName,
+		"sessionId":  c.GetString("session_id"),
+		"authMethod": c.GetString("auth_method"),
+		"hasProfile": hasProfile,
+		"profileId":  profileID,
+	})
 }
 
 func (h *AuthHandler) tokenAuditRecord(access string, record services.AuditRecord) services.AuditRecord {

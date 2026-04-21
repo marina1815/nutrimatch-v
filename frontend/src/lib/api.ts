@@ -1,4 +1,7 @@
+import "client-only";
+
 import {
+  CurrentSession,
   MealRecommendation,
   RecommendationExplanation,
   RecommendationTrace,
@@ -38,40 +41,78 @@ type RequestOptions = {
   retryOnUnauthorized?: boolean;
 };
 
+type ApiMeta = {
+  requestId?: string;
+  timestamp?: string;
+};
+
+type ApiSuccessEnvelope<T> = {
+  data: T;
+  meta?: ApiMeta;
+};
+
+type ApiErrorEnvelope = {
+  error?: {
+    code?: string;
+    message?: string;
+  };
+  meta?: ApiMeta;
+};
+
 export class ApiError extends Error {
   status: number;
+  code?: string;
+  requestId?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string, requestId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
+    this.requestId = requestId;
   }
-}
-
-function getCookie(name: string): string | null {
-  if (typeof document === "undefined") {
-    return null;
-  }
-
-  const prefix = `${name}=`;
-  const cookie = document.cookie
-    .split("; ")
-    .find((item) => item.startsWith(prefix));
-
-  if (!cookie) {
-    return null;
-  }
-
-  return decodeURIComponent(cookie.slice(prefix.length));
 }
 
 async function readErrorMessage(response: Response, fallback: string): Promise<string> {
   try {
-    const payload = (await response.json()) as { error?: string };
-    return payload.error || fallback;
+    const payload = (await response.json()) as ApiErrorEnvelope | { error?: string };
+    if ("error" in payload && typeof payload.error === "object" && payload.error) {
+      return payload.error.message || fallback;
+    }
+    if ("error" in payload && typeof payload.error === "string") {
+      return payload.error || fallback;
+    }
+    return fallback;
   } catch {
     return fallback;
   }
+}
+
+async function readApiError(response: Response, fallback: string): Promise<ApiError> {
+  try {
+    const payload = (await response.json()) as ApiErrorEnvelope | { error?: string; request_id?: string };
+    if ("error" in payload && typeof payload.error === "object" && payload.error) {
+      const requestId = "meta" in payload && payload.meta ? payload.meta.requestId : undefined;
+      return new ApiError(
+        payload.error.message || fallback,
+        response.status,
+        payload.error.code,
+        requestId,
+      );
+    }
+    if ("error" in payload && typeof payload.error === "string") {
+      return new ApiError(
+        payload.error || fallback,
+        response.status,
+        undefined,
+        "request_id" in payload ? payload.request_id : undefined,
+      );
+    }
+  } catch {
+    return new ApiError(fallback, response.status);
+  }
+
+  return new ApiError(fallback, response.status);
 }
 
 async function ensureCsrfToken(): Promise<{ token: string; headerName: string }> {
@@ -87,7 +128,7 @@ async function ensureCsrfToken(): Promise<{ token: string; headerName: string }>
   const payload = (await response.json()) as CsrfTokenResponse;
 
   return {
-    token: payload.csrf_token || getCookie("nutrimatch_csrf") || "",
+    token: payload.csrf_token || "",
     headerName: payload.header_name || DEFAULT_CSRF_HEADER,
   };
 }
@@ -167,17 +208,18 @@ async function apiRequest<T>(
   }
 
   if (!response.ok) {
-    throw new ApiError(
-      await readErrorMessage(response, "API request failed"),
-      response.status,
-    );
+    throw await readApiError(response, "API request failed");
   }
 
   if (response.status === 204) {
     return undefined as T;
   }
 
-  return (await response.json()) as T;
+  const payload = (await response.json()) as ApiSuccessEnvelope<T> | T;
+  if (payload && typeof payload === "object" && "data" in payload) {
+    return payload.data;
+  }
+  return payload as T;
 }
 
 export async function loginUser(payload: { email: string; password: string }) {
@@ -235,9 +277,25 @@ export async function submitProfile(profile: UserProfile) {
   );
 }
 
-export async function getProfile() {
+export async function getProfile(options: { includeSensitive?: boolean } = {}) {
+  const params = new URLSearchParams();
+  if (options.includeSensitive) {
+    params.set("includeSensitive", "true");
+  }
+
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
   return apiRequest<UserProfileResponse>(
-    "/api/v1/profile",
+    `/api/v1/profile${suffix}`,
+    {
+      method: "GET",
+    },
+    { auth: true },
+  );
+}
+
+export async function getCurrentSession() {
+  return apiRequest<CurrentSession>(
+    "/api/v1/auth/whoami",
     {
       method: "GET",
     },

@@ -175,8 +175,7 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 
 	aiApplied := false
 	if s.AI != nil && len(acceptedCandidates) > 0 && shouldApplyAIRerank(constraints, matchedRules) {
-		s.applyAIRerank(ctx, lifestyle, preferences, acceptedCandidates)
-		aiApplied = true
+		aiApplied = s.applyAIRerank(ctx, lifestyle, preferences, acceptedCandidates)
 	}
 
 	sort.SliceStable(acceptedCandidates, func(i, j int) bool {
@@ -500,7 +499,7 @@ func (s *RecommendationService) evaluateCandidate(runID, userID, profileID strin
 	}
 }
 
-func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *models.Lifestyle, preferences *models.Preferences, candidates []*models.RecommendationCandidate) {
+func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *models.Lifestyle, preferences *models.Preferences, candidates []*models.RecommendationCandidate) bool {
 	payload := aiRerankPromptPayload{
 		Goal:                 lifestyle.Goal,
 		ActivityLevel:        lifestyle.ActivityLevel,
@@ -526,12 +525,12 @@ func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *mo
 
 	text, err := s.AI.GenerateText(ctx, "You are a non-authoritative meal reranker. All safety and health rules have already been enforced deterministically. Return ONLY a JSON array with fields id, confidenceBonus (-5 to 5), explanation. Never invent meals, never change ids, never mention health constraints not present in the payload. Input: "+string(buf))
 	if err != nil {
-		return
+		return false
 	}
 
 	var reranks []aiRerank
 	if err := json.Unmarshal([]byte(text), &reranks); err != nil {
-		return
+		return false
 	}
 
 	byID := make(map[string]aiRerank, len(reranks))
@@ -542,6 +541,7 @@ func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *mo
 		byID[rerank.ID] = rerank
 	}
 
+	applied := false
 	for _, candidate := range candidates {
 		rerank, ok := byID[candidate.ExternalRecipeID]
 		if !ok {
@@ -563,7 +563,9 @@ func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *mo
 			"explanation": sanitizedExplanation,
 		}
 		candidate.Explanation = mergeExplanation(candidate.Explanation, sanitizedExplanation)
+		applied = true
 	}
+	return applied
 }
 
 func statusFromCandidates(accepted int) string {

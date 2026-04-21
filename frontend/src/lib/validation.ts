@@ -1,6 +1,9 @@
 import { sanitizeProfile } from "@/lib/profile-normalization";
 import { UserProfile } from "@/lib/types";
 
+const MAX_FLEXIBLE_SIGNAL_COUNT = 40;
+const MAX_PROFILE_TEXT_BUDGET = 1200;
+
 export type ProfileErrors = {
   personal?: Partial<
     Record<"fullName" | "age" | "sex" | "weight" | "height" | "profession" | "city", string>
@@ -76,15 +79,39 @@ export function validateStep(step: number, data: UserProfile): ProfileErrors {
     const exclusionOverlap = normalized.constraints.excludedIngredients.some((item) =>
       normalized.preferences.likes.some((liked) => liked.toLowerCase() === item.toLowerCase()),
     );
+    const flexibleSignalCount =
+      normalized.preferences.likes.length +
+      normalized.preferences.dislikes.length +
+      normalized.constraints.excludedIngredients.length;
+    const textBudget =
+      normalized.personal.fullName.length +
+      normalized.personal.profession.length +
+      normalized.personal.city.length +
+      normalized.constraints.medications.trim().length +
+      normalized.preferences.likes.reduce((sum, item) => sum + item.length, 0) +
+      normalized.preferences.dislikes.reduce((sum, item) => sum + item.length, 0) +
+      normalized.constraints.excludedIngredients.reduce((sum, item) => sum + item.length, 0);
 
     if (normalized.constraints.hasChronicDisease && normalized.constraints.chronicDiseases.length === 0) {
       constraints.chronicDiseases = "Selectionne au moins une maladie chronique";
     }
+    if (!normalized.constraints.hasChronicDisease && normalized.constraints.chronicDiseases.length > 0) {
+      constraints.chronicDiseases = "Retire les maladies chroniques ou active l'option correspondante";
+    }
     if (normalized.constraints.takesMedication && !normalized.constraints.medications.trim()) {
       constraints.medications = "Precise les medicaments";
     }
+    if (!normalized.constraints.takesMedication && normalized.constraints.medications.trim()) {
+      constraints.medications = "Retire les medicaments ou active l'option correspondante";
+    }
     if (exclusionOverlap) {
       constraints.excludedIngredients = "Un ingredient aime ne peut pas etre exclu";
+    }
+    if (flexibleSignalCount > MAX_FLEXIBLE_SIGNAL_COUNT) {
+      constraints.excludedIngredients = "Reduis le nombre total d'ingredients libres et de preferences saisies";
+    }
+    if (textBudget > MAX_PROFILE_TEXT_BUDGET) {
+      constraints.excludedIngredients = "Le profil est trop verbeux pour une recherche fiable, simplifie les saisies libres";
     }
 
     if (Object.keys(constraints).length > 0) errors.constraints = constraints;

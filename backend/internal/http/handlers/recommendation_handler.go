@@ -42,7 +42,7 @@ func (h *RecommendationHandler) Get(c *gin.Context) {
 				Outcome:      "denied",
 				Details:      map[string]any{"reason": "profile_access_denied"},
 			})
-			respondError(c, http.StatusNotFound, "profile not found")
+			respondError(c, http.StatusNotFound, "PROFILE_NOT_FOUND", "profile not found")
 			return
 		}
 		if errors.Is(err, services.ErrRecommendationQuota) {
@@ -54,7 +54,7 @@ func (h *RecommendationHandler) Get(c *gin.Context) {
 				Outcome:      "denied",
 				Details:      map[string]any{"reason": "quota_exceeded"},
 			})
-			respondError(c, http.StatusTooManyRequests, "recommendation quota exceeded")
+			respondError(c, http.StatusTooManyRequests, "RECOMMENDATION_QUOTA_EXCEEDED", "recommendation quota exceeded")
 			return
 		}
 		recordAudit(c, h.Audit, services.AuditRecord{
@@ -64,7 +64,7 @@ func (h *RecommendationHandler) Get(c *gin.Context) {
 			ResourceID:   profileID,
 			Outcome:      "failed",
 		})
-		respondError(c, http.StatusInternalServerError, "recommendations failed")
+		respondError(c, http.StatusInternalServerError, "RECOMMENDATIONS_FAILED", "recommendations failed")
 		return
 	}
 
@@ -78,7 +78,7 @@ func (h *RecommendationHandler) Get(c *gin.Context) {
 			"mealCount": len(response.Meals),
 		},
 	})
-	c.JSON(http.StatusOK, response)
+	respondOK(c, http.StatusOK, response)
 }
 
 func (h *RecommendationHandler) Trace(c *gin.Context) {
@@ -107,7 +107,7 @@ func (h *RecommendationHandler) Trace(c *gin.Context) {
 			ResourceID:   profileID,
 			Outcome:      "failed",
 		})
-		respondError(c, http.StatusNotFound, "recommendation trace not found")
+		respondError(c, http.StatusNotFound, "RECOMMENDATION_TRACE_NOT_FOUND", "recommendation trace not found")
 		return
 	}
 	recordAudit(c, h.Audit, services.AuditRecord{
@@ -117,7 +117,7 @@ func (h *RecommendationHandler) Trace(c *gin.Context) {
 		ResourceID:   trace.RunID,
 		Details:      map[string]any{"profileId": profileID, "candidateCount": len(trace.Candidates)},
 	})
-	c.JSON(http.StatusOK, trace)
+	respondOK(c, http.StatusOK, trace)
 }
 
 func (h *RecommendationHandler) Explain(c *gin.Context) {
@@ -147,7 +147,7 @@ func (h *RecommendationHandler) Explain(c *gin.Context) {
 			ResourceID:   mealID,
 			Outcome:      "failed",
 		})
-		respondError(c, http.StatusNotFound, "recommendation explanation not found")
+		respondError(c, http.StatusNotFound, "RECOMMENDATION_EXPLANATION_NOT_FOUND", "recommendation explanation not found")
 		return
 	}
 	recordAudit(c, h.Audit, services.AuditRecord{
@@ -157,5 +157,5 @@ func (h *RecommendationHandler) Explain(c *gin.Context) {
 		ResourceID:   mealID,
 		Details:      map[string]any{"profileId": profileID, "runId": explanation.RunID},
 	})
-	c.JSON(http.StatusOK, explanation)
+	respondOK(c, http.StatusOK, explanation)
 }

@@ -143,12 +143,13 @@ func main() {
 	}
 
 	authHandler := &handlers.AuthHandler{
-		Cfg:   cfg,
-		Auth:  authService,
-		Users: userRepo,
-		CSRF:  csrfManager,
-		OIDC:  oidcService,
-		Audit: auditService,
+		Cfg:      cfg,
+		Auth:     authService,
+		Users:    userRepo,
+		Profiles: profileService,
+		CSRF:     csrfManager,
+		OIDC:     oidcService,
+		Audit:    auditService,
 	}
 
 	profileHandler := &handlers.ProfileHandler{

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ApiError, loginUser } from "@/lib/api";
+import { ApiError, getCurrentSession, loginUser } from "@/lib/api";
+import { setCurrentProfileId } from "@/lib/session";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 export default function LoginPage() {
@@ -15,7 +16,7 @@ export default function LoginPage() {
   const validate = () => {
     const nextErrors: typeof errors = {};
     if (!form.email.includes("@")) nextErrors.email = "Enter a valid email address";
-    if (form.password.length < 6) nextErrors.password = "Password must be at least 6 characters";
+    if (form.password.length < 12) nextErrors.password = "Password must be at least 12 characters";
     return nextErrors;
   };
 
@@ -32,7 +33,15 @@ export default function LoginPage() {
 
     try {
       await loginUser(form);
-      router.push("/onboarding");
+      try {
+        const session = await getCurrentSession();
+        if (session.profileId) {
+          setCurrentProfileId(session.profileId);
+        }
+        router.push(session.hasProfile ? "/results" : "/onboarding");
+      } catch {
+        router.push("/onboarding");
+      }
     } catch (error) {
       if (error instanceof ApiError) {
         setErrors({ form: getSafeErrorMessage(error, "auth.login") });

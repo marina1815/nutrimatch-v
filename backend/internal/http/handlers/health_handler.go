@@ -6,9 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type HealthHandler struct {}
+type HealthHandler struct{}
 
 func (h *HealthHandler) Ping(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	respondOK(c, http.StatusOK, gin.H{"status": "ok"})
 }
-

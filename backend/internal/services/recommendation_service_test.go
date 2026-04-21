@@ -57,6 +57,57 @@ type fakeProfileRepository struct {
 	upsertNutrition   bool
 }
 
+type fakeMedicalRuleRepository struct {
+	rules []models.MedicalRule
+}
+
+func (r *fakeMedicalRuleRepository) ListActive(_ context.Context) ([]models.MedicalRule, error) {
+	return append([]models.MedicalRule{}, r.rules...), nil
+}
+
+type memoryTraceRepositoryForService struct {
+	run        *models.RecommendationRun
+	candidates []*models.RecommendationCandidate
+}
+
+func (r *memoryTraceRepositoryForService) CreateRun(_ context.Context, run *models.RecommendationRun) error {
+	copied := *run
+	r.run = &copied
+	return nil
+}
+
+func (r *memoryTraceRepositoryForService) ReplaceCandidates(_ context.Context, _ string, candidates []*models.RecommendationCandidate) error {
+	r.candidates = make([]*models.RecommendationCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		copied := *candidate
+		r.candidates = append(r.candidates, &copied)
+	}
+	return nil
+}
+
+func (r *memoryTraceRepositoryForService) GetLatestRunByProfile(_ context.Context, _, _ string) (*models.RecommendationRun, []*models.RecommendationCandidate, error) {
+	if r.run == nil {
+		return nil, nil, errors.New("not found")
+	}
+	items := make([]*models.RecommendationCandidate, 0, len(r.candidates))
+	for _, candidate := range r.candidates {
+		copied := *candidate
+		items = append(items, &copied)
+	}
+	copiedRun := *r.run
+	return &copiedRun, items, nil
+}
+
+func (r *memoryTraceRepositoryForService) GetCandidateByRecipeID(_ context.Context, _, _, recipeID string) (*models.RecommendationCandidate, error) {
+	for _, candidate := range r.candidates {
+		if candidate.ExternalRecipeID == recipeID {
+			copied := *candidate
+			return &copied, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
 func (r *fakeProfileRepository) UpsertProfile(_ context.Context, profile *models.Profile) error {
 	r.upsertProfile = true
 	r.profile = profile
@@ -132,6 +183,8 @@ func (m *fakeTxManager) WithinTransaction(_ context.Context, fn func(repository.
 
 type fakeRecipeSearcher struct {
 	called bool
+	resp   *spoonacular.SearchResponse
+	err    error
 }
 
 type fakeAITextGenerator struct {
@@ -142,6 +195,12 @@ type fakeAITextGenerator struct {
 
 func (s *fakeRecipeSearcher) Search(_ context.Context, _ spoonacular.SearchOptions) (*spoonacular.SearchResponse, error) {
 	s.called = true
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.resp != nil {
+		return s.resp, nil
+	}
 	return &spoonacular.SearchResponse{}, nil
 }
 
@@ -375,6 +434,79 @@ func TestApplyAIRerankValidatesIDsAndPreservesDeterministicExplanation(t *testin
 	}
 	if strings.Contains(strings.ToLower(ai.prompt), "medication") || strings.Contains(strings.ToLower(ai.prompt), "condition") {
 		t.Fatalf("expected minimized prompt without sensitive health details, got %q", ai.prompt)
+	}
+}
+
+func TestApplyAIRerankReturnsFalseWhenAIUnavailable(t *testing.T) {
+	ai := &fakeAITextGenerator{err: errors.New("upstream unavailable")}
+	service := &RecommendationService{AI: ai}
+	candidates := []*models.RecommendationCandidate{
+		{
+			ExternalRecipeID: "meal-1",
+			Title:            "Chicken Bowl",
+			FinalScore:       50,
+			Explanation:      "Selected because passes deterministic profile validation",
+			SourceProvenance: models.JSONMap{},
+		},
+	}
+
+	applied := service.applyAIRerank(context.Background(), &models.Lifestyle{
+		Goal:          "weight_loss",
+		ActivityLevel: "light",
+	}, &models.Preferences{
+		Likes:      models.StringSlice{"chicken"},
+		MealStyles: models.StringSlice{"healthy"},
+	}, candidates)
+
+	if applied {
+		t.Fatalf("expected ai rerank to report false when AI is unavailable")
+	}
+	if candidates[0].FinalScore != 50 {
+		t.Fatalf("expected deterministic score to remain unchanged, got %v", candidates[0].FinalScore)
+	}
+}
+
+func TestGetRecommendationsGracefullyHandlesRecipeUpstreamFailure(t *testing.T) {
+	userRepo := &fakeUserRepository{user: &models.User{ID: "user-1", FullName: "User"}}
+	profileRepo := &fakeProfileRepository{
+		profile:     &models.Profile{ID: "profile-1", UserID: "user-1", Age: 25},
+		lifestyle:   &models.Lifestyle{UserID: "user-1", Goal: "weight_loss", ActivityLevel: "light", MaxReadyTime: 30},
+		preferences: &models.Preferences{UserID: "user-1", MealsPerDay: 3},
+		constraints: &models.Constraints{UserID: "user-1"},
+		nutritionProfile: &models.NutritionProfile{
+			ID:                 "nutrition-1",
+			UserID:             "user-1",
+			ProfileID:          "profile-1",
+			CalculatedAt:       time.Now(),
+			MaxMealCalories:    800,
+			MinProteinPerMeal:  10,
+			MaxCarbsPerMeal:    100,
+			MaxFatPerMeal:      50,
+			MaxSugarPerMeal:    30,
+			MaxSodiumMgPerMeal: 1200,
+		},
+	}
+	traceRepo := &memoryTraceRepositoryForService{}
+	searcher := &fakeRecipeSearcher{err: spoonacular.ErrUpstreamFailure}
+	service := &RecommendationService{
+		Profiles:     &ProfileService{Users: userRepo, Profiles: profileRepo},
+		Recipes:      searcher,
+		MedicalRules: &fakeMedicalRuleRepository{},
+		Traces:       traceRepo,
+	}
+
+	response, err := service.GetRecommendations(context.Background(), "user-1", "profile-1", "req-1")
+	if err != nil {
+		t.Fatalf("expected graceful no-match response on upstream failure, got %v", err)
+	}
+	if len(response.Meals) != 0 {
+		t.Fatalf("expected no meals when upstream is unavailable, got %d", len(response.Meals))
+	}
+	if traceRepo.run == nil || traceRepo.run.Status != "no_matches" {
+		t.Fatalf("expected persisted no_matches run, got %+v", traceRepo.run)
+	}
+	if traceRepo.run.ExternalTrace == nil || traceRepo.run.ExternalTrace["strict_profile"] == nil {
+		t.Fatalf("expected external trace to capture upstream failure")
 	}
 }
 

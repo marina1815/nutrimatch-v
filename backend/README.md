@@ -11,7 +11,8 @@ Backend Go securise pour NutriMatch, base sur Gin + GORM + PostgreSQL, avec clea
 - Copiez `.env.example` vers `.env` et ajustez les valeurs.
 - Les durees des tokens JWT sont gerees via `ACCESS_TOKEN_TTL_MINUTES` et `REFRESH_TOKEN_TTL_HOURS`.
 - `REFRESH_TOKEN_PEPPER` sert au hachage des refresh tokens stockes en table `sessions`.
-- `JWT_SECRET`, `REFRESH_TOKEN_PEPPER` et `HEALTH_DATA_ENCRYPTION_KEY` doivent etre distincts et faire au moins 32 caracteres.
+- `JWT_SECRET` et `REFRESH_TOKEN_PEPPER` doivent faire au moins 32 caracteres et etre distincts.
+- `HEALTH_DATA_ENCRYPTION_KEY` doit faire exactement 32 caracteres ASCII pour satisfaire AES-256-GCM.
 - `COOKIE_PATH_REFRESH` permet de limiter la portee du cookie refresh aux endpoints d'auth.
 - `COOKIE_PATH_CSRF`, `COOKIE_NAME_CSRF`, `CSRF_HEADER_NAME` et `CSRF_TTL_MINUTES` pilotent la protection CSRF double-submit signee.
 - `TRUSTED_ORIGINS` definit les origines autorisees pour les endpoints sensibles bases sur cookie (`csrf`, `register`, `login`, `refresh`, `logout`).
@@ -55,6 +56,7 @@ go test .\...
 ## Endpoints
 - `GET /api/v1/health`
 - `GET /api/v1/auth/csrf`
+- `GET /api/v1/auth/whoami` (auth requise)
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
@@ -68,14 +70,25 @@ go test .\...
 - `GET /api/v1/recommendations/:profileId/trace` (auth requise)
 - `GET /api/v1/recommendations/:profileId/explanation?mealId=...` (auth requise)
 
+Contrat JSON:
+- Les reponses JSON de succes utilisent l'enveloppe `{ "data": ..., "meta": { "requestId": "...", "timestamp": "..." } }`
+- Les erreurs JSON utilisent l'enveloppe `{ "error": { "code": "...", "message": "..." }, "meta": { ... } }`
+- `POST /api/v1/auth/logout` reste volontairement en `204 No Content`
+
 Notes securite:
 - Les mots de passe font au minimum 12 caracteres.
 - En production, TLS est attendu pour la base de donnees, les cookies doivent etre `Secure`, et les origines doivent etre en `https`.
 - Les traces d'appels externes et les decisions de filtrage sont stockees pour auditabilite.
 - Les sorties IA ne sont jamais source d'autorite: elles ne peuvent qu'ajuster le classement final apres passage du firewall deterministe.
+- La matrice `menace -> controle -> preuve` et les limites residuelles sont documentees dans `doc/security_controls.md`.
 
 Compatibilite frontend:
 - `POST /api/v1/profile`
 - `GET /api/v1/profile`
 - `GET /api/v1/profile/nutrition`
 - `GET /api/v1/recommendations/:profileId`
+
+Documentation complementaire:
+- contrat API: `doc/api_contract.md`
+- controles et limites de securite: `doc/security_controls.md`
+- logique metier finale: `doc/business_logic.md`

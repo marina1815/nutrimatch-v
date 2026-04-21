@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ApiError, registerUser } from "@/lib/api";
+import { ApiError, getCurrentSession, registerUser } from "@/lib/api";
+import { setCurrentProfileId } from "@/lib/session";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 interface FormState {
@@ -58,7 +59,15 @@ export default function RegisterPage() {
         email: form.email,
         password: form.password,
       });
-      router.push("/onboarding");
+      try {
+        const session = await getCurrentSession();
+        if (session.profileId) {
+          setCurrentProfileId(session.profileId);
+        }
+        router.push(session.hasProfile ? "/results" : "/onboarding");
+      } catch {
+        router.push("/onboarding");
+      }
     } catch (error) {
       if (error instanceof ApiError) {
         setErrors({ form: getSafeErrorMessage(error, "auth.register") });

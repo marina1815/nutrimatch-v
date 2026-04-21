@@ -1,3 +1,5 @@
+import "client-only";
+
 import { UserProfile } from "@/lib/types";
 
 const ACCESS_TOKEN_KEY = "nutrimatch-access-token";

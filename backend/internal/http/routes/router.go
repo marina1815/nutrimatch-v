@@ -70,6 +70,7 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *securi
 
 		protected := v1.Group("")
 		protected.Use(middleware.AuthRequired(tokens, sessions, cfg.SessionIdleTTL))
+		protected.GET("/auth/whoami", auth.WhoAmI)
 		protected.POST("/profile", profiles.Upsert)
 		protected.GET("/profile", profiles.Get)
 		protected.GET("/profile/nutrition", profiles.GetNutrition)

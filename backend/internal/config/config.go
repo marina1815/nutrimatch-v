@@ -162,8 +162,8 @@ func (c *Config) Validate() error {
 	if len(c.RefreshTokenPepper) < 32 {
 		problems = append(problems, "REFRESH_TOKEN_PEPPER must be at least 32 characters")
 	}
-	if len(c.HealthDataKey) < 32 {
-		problems = append(problems, "HEALTH_DATA_ENCRYPTION_KEY must be at least 32 characters")
+	if len(c.HealthDataKey) != 32 {
+		problems = append(problems, "HEALTH_DATA_ENCRYPTION_KEY must be exactly 32 characters")
 	}
 	if c.RefreshTokenPepper == c.JWTSecret {
 		problems = append(problems, "REFRESH_TOKEN_PEPPER must be distinct from JWT_SECRET")

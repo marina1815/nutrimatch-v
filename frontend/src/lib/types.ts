@@ -121,6 +121,10 @@ export interface ConstraintsInfo {
   medications: string;
 }
 
+export interface ConstraintsResponse extends ConstraintsInfo {
+  medicationsRedacted?: boolean;
+}
+
 export interface UserProfile {
   personal: PersonalInfo;
   lifestyle: LifestyleInfo;
@@ -152,8 +156,9 @@ export interface HealthMetrics {
   estimatedCalories: number;
 }
 
-export interface UserProfileResponse extends UserProfile {
+export interface UserProfileResponse extends Omit<UserProfile, "constraints"> {
   profileId: string;
+  constraints: ConstraintsResponse;
 }
 
 export interface NutritionProfile {
@@ -176,6 +181,16 @@ export interface NutritionProfile {
   derivedExcluded: string[];
   recommendedMealStyles: string[];
   metadata: Record<string, unknown>;
+}
+
+export interface CurrentSession {
+  userId: string;
+  email: string;
+  fullName: string;
+  sessionId: string;
+  authMethod: string;
+  hasProfile: boolean;
+  profileId: string;
 }
 
 export interface RecommendationExplanation {

@@ -1,12 +1,37 @@
 package handlers
 
-import "github.com/gin-gonic/gin"
+import (
+	"net/http"
+	"time"
 
-func respondError(c *gin.Context, status int, message string) {
-	requestID := c.GetString("request_id")
-	body := gin.H{"error": message}
-	if requestID != "" {
-		body["request_id"] = requestID
+	"github.com/gin-gonic/gin"
+	"github.com/marina1815/nutrimatch/internal/http/dto"
+)
+
+func respondOK[T any](c *gin.Context, status int, data T) {
+	c.JSON(status, dto.SuccessResponse[T]{
+		Data: data,
+		Meta: responseMeta(c),
+	})
+}
+
+func respondNoContent(c *gin.Context) {
+	c.Status(http.StatusNoContent)
+}
+
+func respondError(c *gin.Context, status int, code, message string) {
+	c.JSON(status, dto.ErrorResponse{
+		Error: dto.ErrorBody{
+			Code:    code,
+			Message: message,
+		},
+		Meta: responseMeta(c),
+	})
+}
+
+func responseMeta(c *gin.Context) dto.ResponseMeta {
+	return dto.ResponseMeta{
+		RequestID: c.GetString("request_id"),
+		Timestamp: time.Now().UTC(),
 	}
-	c.JSON(status, body)
 }

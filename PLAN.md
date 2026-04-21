@@ -69,11 +69,11 @@ Convention :
 
 ### 4.1 Contrat API
 
-- [ ] Redefinir le contrat API frontend/backend complet
-- [ ] Versionner clairement les DTO d'entree/sortie
-- [ ] Uniformiser les reponses d'erreur
-- [ ] Uniformiser les codes HTTP
-- [ ] Uniformiser les identifiants, timestamps et metadonnees de tracage
+- [~] Redefinir le contrat API frontend/backend complet
+- [~] Versionner clairement les DTO d'entree/sortie
+- [x] Uniformiser les reponses d'erreur
+- [~] Uniformiser les codes HTTP
+- [x] Uniformiser les identifiants, timestamps et metadonnees de tracage
 
 ### 4.2 Authentification et session
 
@@ -91,9 +91,9 @@ Convention :
 
 - [x] Refaire la persistance du profil sur le nouveau schema
 - [~] Introduire normalisation et validation forte cote backend
-- [ ] Refuser toute donnee incoherente ou ambigue
+- [~] Refuser toute donnee incoherente ou ambigue
 - [x] Chiffrer correctement les donnees de sante sensibles au repos
-- [ ] Definir la politique d'exposition minimale des donnees de profil
+- [~] Definir la politique d'exposition minimale des donnees de profil
 - [x] Ajouter endpoint de lecture/edition coherent avec le frontend
 
 ### 4.4 Taxonomie metier
@@ -139,8 +139,8 @@ Convention :
 - [~] Revoir CSRF/cookies/CORS selon le flux final reel
 - [~] Ajouter protection anti-bruteforce et anti-enumeration
 - [~] Durcir rate limiting et quotas pour environnement multi-instance
-- [ ] Ajouter validation de taille, cardinalite et complexite des payloads
-- [ ] Ajouter politique de logs de securite sans fuite de donnees sensibles
+- [~] Ajouter validation de taille, cardinalite et complexite des payloads
+- [~] Ajouter politique de logs de securite sans fuite de donnees sensibles
 - [ ] Ajouter protection contre SSRF si des URLs externes sont un jour acceptees
 - [~] Ajouter politique de secrets et rotation
 - [~] Ajouter strategie de hardening production
@@ -212,29 +212,29 @@ Convention :
 ### 7.2 Frontend
 
 - [x] Corriger `npm run lint`
-- [ ] Faire passer `npm run build`
+- [x] Faire passer `npm run build`
 - [ ] Ajouter tests sur les flux critiques si stack retenue
 - [x] Verifier l'absence de dependance aux mocks en production
 
 ### 7.3 End-to-end
 
-- [ ] Tester register -> login -> onboarding -> profil -> recommandations -> explication
-- [ ] Tester profils avec allergies
-- [ ] Tester profils avec maladies chroniques
-- [ ] Tester profils avec medicaments
-- [ ] Tester cas sans resultats surs
-- [ ] Tester degradation gracieuse si Spoonacular indisponible
-- [ ] Tester degradation gracieuse si IA indisponible
+- [~] Tester register -> login -> onboarding -> profil -> recommandations -> explication
+- [x] Tester profils avec allergies
+- [x] Tester profils avec maladies chroniques
+- [x] Tester profils avec medicaments
+- [x] Tester cas sans resultats surs
+- [x] Tester degradation gracieuse si Spoonacular indisponible
+- [x] Tester degradation gracieuse si IA indisponible
 
 ## 8. Nettoyage et documentation finale
 
-- [ ] Reecrire les README selon l'architecture finale
+- [~] Reecrire les README selon l'architecture finale
 - [ ] Documenter les variables d'environnement reelles
 - [x] Documenter le schema SQL final cible
 - [x] Documenter la couche vectorielle finale cible
-- [ ] Documenter le contrat API final
-- [ ] Documenter les choix de securite et leurs limites
-- [ ] Documenter la logique metier finale
+- [x] Documenter le contrat API final
+- [x] Documenter les choix de securite et leurs limites
+- [x] Documenter la logique metier finale
 - [x] Supprimer le code mort, les mocks non necessaires et les anciens schemas
 
 ## 9. Ordre d'execution recommande
@@ -258,7 +258,7 @@ Convention :
 - [x] La couche vectorielle est correctement definie et reliee a un besoin metier reel
 - [x] `go test ./...` passe
 - [x] `npm run lint` passe
-- [ ] `npm run build` passe
+- [x] `npm run build` passe
 - [ ] Le flux complet utilisateur fonctionne de bout en bout
 
 ## 11. References de securite et API a suivre
@@ -290,3 +290,10 @@ Convention :
 - [x] 2026-04-21 : alignement supplementaire du frontend avec la taxonomie backend via sanitisation du profil, bornes de champs et validation plus stricte ; suppression de l'affichage des messages backend bruts sur login/register/onboarding/profile/results au profit de messages UI bornes, avec `npm run lint` et `npx tsc --noEmit` toujours verts
 - [x] 2026-04-21 : ajout d'un circuit breaker simple au searcher Spoonacular avec seuil et cooldown configurables, ouverture seulement sur echecs upstream retryables, reutilisation prioritaire du cache, et validation backend via `go test ./...`
 - [x] 2026-04-21 : extension du contrat profil avec `maxReadyTime`, `mealTypes`, `preferredCuisines` et `excludedCuisines`, propagation backend/frontend jusqu'a Spoonacular, ajout d'un endpoint protege de suggestion d'ingredients, validation canonique renforcee cote backend, autocompletion frontend sur les ingredients libres, et verification par `go test ./...`, `npm run lint` et `npx tsc --noEmit`
+- [x] 2026-04-21 : alignement supplementaire sur le plan avec verification stricte de `HEALTH_DATA_ENCRYPTION_KEY` (exactement 32 caracteres), reduction de l'exposition par defaut des medicaments dans `GET /profile`, pseudonymisation des empreintes IP/User-Agent dans l'audit applicatif, et suppression du reliquat frontend `localStorage` pour le callback OIDC
+- [x] 2026-04-21 : uniformisation du contrat JSON API avec enveloppes `data/meta` et `error/meta`, ajout d'un endpoint protege `auth/whoami`, alignement frontend sur le nouveau contrat et redirection login/OIDC selon l'existence d'un profil, valide par `go test ./...`, `npm run lint` et `npx tsc --noEmit`
+- [x] 2026-04-21 : ajout de garde-fous backend/frontend contre les profils ambigus ou trop complexes (overlaps likes/dislikes, cuisines preferees/exclues, flags sante incoherents, budget texte et signaux libres bornes), plus tests backend sur le flux sensible complet `profil -> nutrition -> recommandations -> trace -> explication`, avec `go test ./...`, `npm run lint` et `npx tsc --noEmit` toujours verts
+- [x] 2026-04-21 : couverture de robustesse du moteur de recommandation avec tests backend pour `no safe matches`, indisponibilite Spoonacular et indisponibilite IA ; correction du flag `aiApplied` pour ne plus marquer l'IA comme appliquee quand le rerank echoue, avec `go test ./...`, `npm run lint` et `npx tsc --noEmit` toujours verts
+- [x] 2026-04-21 : deblocage du build frontend en remplacant le dossier de sortie par `build/` et en figeant `next build --webpack`, avec `npm run build`, `npm run lint` et `npx tsc --noEmit` valides
+- [x] 2026-04-21 : ajout d'un test de fail-safe allergie garantissant le rejet trace d'une recette dangereuse et la conservation d'une alternative sure, plus creation de `doc/security_controls.md` pour formaliser la matrice `menace -> controle -> preuve`
+- [x] 2026-04-22 : ajout de tests end-to-end explicites pour profils avec hypertension et medicament de type `statin`, afin de prouver l'effet des regles medicales sur `profile/nutrition`, le filtrage des recommandations et la desactivation du rerank IA ; documentation de la pipeline metier finale dans `doc/business_logic.md`

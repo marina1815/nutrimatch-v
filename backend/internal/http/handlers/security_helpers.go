@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/marina1815/nutrimatch/internal/security"
 	"github.com/marina1815/nutrimatch/internal/services"
 )
 
@@ -23,7 +24,7 @@ func allowAccess(c *gin.Context, policy *services.AccessPolicyService, action st
 		return true
 	}
 
-	respondError(c, 403, "access denied")
+	respondError(c, 403, "ACCESS_DENIED", "access denied")
 	return false
 }
 
@@ -41,10 +42,10 @@ func recordAudit(c *gin.Context, audit *services.AuditService, record services.A
 		record.RequestID = c.GetString("request_id")
 	}
 	if record.IP == "" {
-		record.IP = c.ClientIP()
+		record.IP = security.HashFingerprint(c.ClientIP())
 	}
 	if record.UserAgent == "" {
-		record.UserAgent = c.Request.UserAgent()
+		record.UserAgent = security.HashFingerprint(c.Request.UserAgent())
 	}
 	if record.Details == nil {
 		record.Details = map[string]any{}

@@ -106,6 +106,11 @@ export default function ProfilePage() {
           <div><strong>Allergies:</strong> {profile.constraints.allergies.join(", ") || "-"}</div>
           <div><strong>Conditions:</strong> {profile.constraints.conditions.join(", ") || "-"}</div>
           <div><strong>Excluded ingredients:</strong> {profile.constraints.excludedIngredients.join(", ") || "-"}</div>
+          {profile.constraints.takesMedication && profile.constraints.medicationsRedacted && (
+            <div>
+              <strong>Medications:</strong> hidden in this summary for safety
+            </div>
+          )}
           {nutrition && (
             <div className="nm-card">
               <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>Health metrics</h2>
