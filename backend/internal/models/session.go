@@ -8,10 +8,12 @@ type Session struct {
 	AuthMethod       string     `gorm:"not null;default:'local'"`
 	RefreshTokenHash string     `gorm:"uniqueIndex;not null"`
 	ExpiresAt        time.Time  `gorm:"not null"`
+	IdleExpiresAt    time.Time  `gorm:"not null"`
 	CreatedAt        time.Time  `gorm:"not null;default:now()"`
+	LastSeenAt       time.Time  `gorm:"not null;default:now()"`
 	RevokedAt        *time.Time `gorm:"default:null"`
-	UserAgent        string     `gorm:"not null"`
-	IP               string     `gorm:"not null"`
+	UserAgentHash    string     `gorm:"not null;default:''"`
+	IPHash           string     `gorm:"not null;default:''"`
 }
 
 func (Session) TableName() string {

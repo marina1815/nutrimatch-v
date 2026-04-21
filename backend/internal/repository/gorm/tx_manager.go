@@ -24,6 +24,8 @@ func (m *TxManager) WithinTransaction(ctx context.Context, fn func(repository.Re
 			MedicalRules:       NewMedicalRuleRepository(tx),
 			RecommendationRuns: NewRecommendationTraceRepository(tx),
 			Audit:              NewAuditRepository(tx),
+			AuthFailures:       NewAuthFailureRepository(tx),
+			RateLimitBuckets:   NewRateLimitBucketRepository(tx),
 			ExternalIdentities: NewExternalIdentityRepository(tx),
 		}
 		return fn(repos)

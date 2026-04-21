@@ -115,35 +115,29 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	user, err := h.Users.GetByEmail(c.Request.Context(), req.Email)
+	access, accessExp, refresh, refreshExp, err := h.Auth.Login(c.Request.Context(), req.Email, req.Password, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
+		status := http.StatusUnauthorized
+		errorMessage := "invalid credentials"
+		reason := "invalid_credentials"
+		if err == services.ErrAuthTemporarilyBlocked {
+			status = http.StatusTooManyRequests
+			errorMessage = "authentication temporarily blocked"
+			reason = "temporarily_blocked"
+		}
 		recordAudit(c, h.Audit, services.AuditRecord{
 			EventType:    "auth.login",
 			ResourceType: "identity.session",
 			Outcome:      "denied",
-			Details:      map[string]any{"reason": "unknown_principal"},
+			Details:      map[string]any{"reason": reason},
 		})
-		respondError(c, http.StatusUnauthorized, "invalid credentials")
-		return
-	}
-
-	access, accessExp, refresh, refreshExp, err := h.Auth.Login(c.Request.Context(), user, req.Password, c.Request.UserAgent(), c.ClientIP())
-	if err != nil {
-		recordAudit(c, h.Audit, services.AuditRecord{
-			UserID:       user.ID,
-			EventType:    "auth.login",
-			ResourceType: "identity.session",
-			Outcome:      "denied",
-			Details:      map[string]any{"reason": "invalid_credentials"},
-		})
-		respondError(c, http.StatusUnauthorized, "invalid credentials")
+		respondError(c, status, errorMessage)
 		return
 	}
 
 	setRefreshCookie(c, h.Cfg, refresh, refreshExp)
 	ensureCSRFCookie(c, h.Cfg, h.CSRF)
 	recordAudit(c, h.Audit, h.tokenAuditRecord(access, services.AuditRecord{
-		UserID:       user.ID,
 		EventType:    "auth.login",
 		ResourceType: "identity.session",
 	}))

@@ -1,0 +1,1009 @@
+package routes
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/marina1815/nutrimatch/internal/clients/spoonacular"
+	"github.com/marina1815/nutrimatch/internal/config"
+	"github.com/marina1815/nutrimatch/internal/http/handlers"
+	"github.com/marina1815/nutrimatch/internal/http/middleware"
+	"github.com/marina1815/nutrimatch/internal/models"
+	"github.com/marina1815/nutrimatch/internal/repository"
+	"github.com/marina1815/nutrimatch/internal/security"
+	"github.com/marina1815/nutrimatch/internal/services"
+	"golang.org/x/time/rate"
+)
+
+type memoryUserRepository struct {
+	byID    map[string]*models.User
+	byEmail map[string]*models.User
+	nextID  int
+}
+
+func newMemoryUserRepository() *memoryUserRepository {
+	return &memoryUserRepository{
+		byID:    map[string]*models.User{},
+		byEmail: map[string]*models.User{},
+		nextID:  1,
+	}
+}
+
+func (r *memoryUserRepository) Create(_ context.Context, user *models.User) error {
+	if _, exists := r.byEmail[user.Email]; exists {
+		return errors.New("duplicate email")
+	}
+	if user.ID == "" {
+		user.ID = "user-" + strconv.Itoa(r.nextID)
+		r.nextID++
+	}
+	copied := *user
+	r.byID[user.ID] = &copied
+	r.byEmail[user.Email] = &copied
+	return nil
+}
+
+func (r *memoryUserRepository) GetByEmail(_ context.Context, email string) (*models.User, error) {
+	user, ok := r.byEmail[email]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	copied := *user
+	return &copied, nil
+}
+
+func (r *memoryUserRepository) GetByID(_ context.Context, id string) (*models.User, error) {
+	user, ok := r.byID[id]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	copied := *user
+	return &copied, nil
+}
+
+func (r *memoryUserRepository) UpdateFullName(_ context.Context, userID, fullName string) error {
+	user, ok := r.byID[userID]
+	if !ok {
+		return errors.New("not found")
+	}
+	user.FullName = fullName
+	r.byEmail[user.Email] = user
+	return nil
+}
+
+type memorySessionRepository struct {
+	byID          map[string]*models.Session
+	byRefreshHash map[string]*models.Session
+}
+
+type memoryAuthFailureRepository struct {
+	failures []models.AuthFailure
+}
+
+func newMemorySessionRepository() *memorySessionRepository {
+	return &memorySessionRepository{
+		byID:          map[string]*models.Session{},
+		byRefreshHash: map[string]*models.Session{},
+	}
+}
+
+func (r *memorySessionRepository) Create(_ context.Context, session *models.Session) error {
+	copied := *session
+	r.byID[session.ID] = &copied
+	r.byRefreshHash[session.RefreshTokenHash] = &copied
+	return nil
+}
+
+func (r *memorySessionRepository) GetByID(_ context.Context, sessionID string) (*models.Session, error) {
+	session, ok := r.byID[sessionID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	copied := *session
+	return &copied, nil
+}
+
+func (r *memorySessionRepository) GetByRefreshHash(_ context.Context, refreshHash string) (*models.Session, error) {
+	session, ok := r.byRefreshHash[refreshHash]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	copied := *session
+	return &copied, nil
+}
+
+func (r *memorySessionRepository) Rotate(_ context.Context, sessionID, newRefreshHash string, expiresAt, idleExpiresAt time.Time) error {
+	session, ok := r.byID[sessionID]
+	if !ok {
+		return errors.New("not found")
+	}
+	delete(r.byRefreshHash, session.RefreshTokenHash)
+	session.RefreshTokenHash = newRefreshHash
+	session.ExpiresAt = expiresAt
+	session.IdleExpiresAt = idleExpiresAt
+	session.LastSeenAt = time.Now()
+	r.byRefreshHash[newRefreshHash] = session
+	return nil
+}
+
+func (r *memorySessionRepository) Touch(_ context.Context, sessionID string, idleExpiresAt time.Time) error {
+	session, ok := r.byID[sessionID]
+	if !ok {
+		return errors.New("not found")
+	}
+	session.IdleExpiresAt = idleExpiresAt
+	session.LastSeenAt = time.Now()
+	return nil
+}
+
+func (r *memorySessionRepository) Revoke(_ context.Context, sessionID string) error {
+	session, ok := r.byID[sessionID]
+	if !ok {
+		return errors.New("not found")
+	}
+	now := time.Now()
+	session.RevokedAt = &now
+	return nil
+}
+
+func (r *memoryAuthFailureRepository) Create(_ context.Context, failure *models.AuthFailure) error {
+	copied := *failure
+	r.failures = append(r.failures, copied)
+	return nil
+}
+
+func (r *memoryAuthFailureRepository) CountRecent(_ context.Context, emailHash, ipHash string, since time.Time) (int64, error) {
+	var count int64
+	for _, failure := range r.failures {
+		if failure.OccurredAt.Before(since) {
+			continue
+		}
+		if (emailHash != "" && failure.EmailHash == emailHash) || (ipHash != "" && failure.IPHash == ipHash) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+type memoryProfileRepository struct {
+	profiles      map[string]*models.Profile
+	lifestyles    map[string]*models.Lifestyle
+	preferences   map[string]*models.Preferences
+	constraints   map[string]*models.Constraints
+	nutritions    map[string]*models.NutritionProfile
+	nextProfile   int
+	nextNutrition int
+}
+
+func (r *memoryProfileRepository) UpsertProfile(_ context.Context, profile *models.Profile) error {
+	if r.profiles == nil {
+		r.profiles = map[string]*models.Profile{}
+	}
+	if profile.ID == "" {
+		r.nextProfile++
+		profile.ID = "profile-" + strconv.Itoa(r.nextProfile)
+	}
+	copied := *profile
+	r.profiles[profile.UserID] = &copied
+	return nil
+}
+
+func (r *memoryProfileRepository) UpsertLifestyle(_ context.Context, lifestyle *models.Lifestyle) error {
+	if r.lifestyles == nil {
+		r.lifestyles = map[string]*models.Lifestyle{}
+	}
+	copied := *lifestyle
+	r.lifestyles[lifestyle.UserID] = &copied
+	return nil
+}
+
+func (r *memoryProfileRepository) UpsertPreferences(_ context.Context, preferences *models.Preferences) error {
+	if r.preferences == nil {
+		r.preferences = map[string]*models.Preferences{}
+	}
+	copied := *preferences
+	r.preferences[preferences.UserID] = &copied
+	return nil
+}
+
+func (r *memoryProfileRepository) UpsertConstraints(_ context.Context, constraints *models.Constraints) error {
+	if r.constraints == nil {
+		r.constraints = map[string]*models.Constraints{}
+	}
+	copied := *constraints
+	r.constraints[constraints.UserID] = &copied
+	return nil
+}
+
+func (r *memoryProfileRepository) GetProfile(_ context.Context, userID string) (*models.Profile, *models.Lifestyle, *models.Preferences, *models.Constraints, error) {
+	profile := r.profiles[userID]
+	lifestyle := r.lifestyles[userID]
+	prefs := r.preferences[userID]
+	constraints := r.constraints[userID]
+	if profile == nil || lifestyle == nil || prefs == nil || constraints == nil {
+		return nil, nil, nil, nil, errors.New("not found")
+	}
+	profileCopy := *profile
+	lifestyleCopy := *lifestyle
+	prefsCopy := *prefs
+	constraintsCopy := *constraints
+	return &profileCopy, &lifestyleCopy, &prefsCopy, &constraintsCopy, nil
+}
+
+func (r *memoryProfileRepository) ListProfileBundles(_ context.Context, _ string, _ int) ([]repository.ProfileBundle, error) {
+	return []repository.ProfileBundle{}, nil
+}
+
+func (r *memoryProfileRepository) UpsertNutritionProfile(_ context.Context, profile *models.NutritionProfile) error {
+	if r.nutritions == nil {
+		r.nutritions = map[string]*models.NutritionProfile{}
+	}
+	if profile.ID == "" {
+		r.nextNutrition++
+		profile.ID = "nutrition-" + strconv.Itoa(r.nextNutrition)
+	}
+	copied := *profile
+	r.nutritions[profile.UserID] = &copied
+	return nil
+}
+
+func (r *memoryProfileRepository) GetNutritionProfile(_ context.Context, userID string) (*models.NutritionProfile, error) {
+	profile := r.nutritions[userID]
+	if profile == nil {
+		return nil, errors.New("not found")
+	}
+	copied := *profile
+	return &copied, nil
+}
+
+type memoryMedicalRuleRepository struct {
+	rules []models.MedicalRule
+}
+
+func (r *memoryMedicalRuleRepository) ListActive(_ context.Context) ([]models.MedicalRule, error) {
+	return append([]models.MedicalRule{}, r.rules...), nil
+}
+
+type memoryTraceRepository struct {
+	runsByProfile     map[string]*models.RecommendationRun
+	candidatesByRunID map[string][]*models.RecommendationCandidate
+}
+
+func (r *memoryTraceRepository) CreateRun(_ context.Context, run *models.RecommendationRun) error {
+	if r.runsByProfile == nil {
+		r.runsByProfile = map[string]*models.RecommendationRun{}
+	}
+	copied := *run
+	r.runsByProfile[run.UserID+"|"+run.ProfileID] = &copied
+	return nil
+}
+
+func (r *memoryTraceRepository) ReplaceCandidates(_ context.Context, runID string, candidates []*models.RecommendationCandidate) error {
+	if r.candidatesByRunID == nil {
+		r.candidatesByRunID = map[string][]*models.RecommendationCandidate{}
+	}
+	items := make([]*models.RecommendationCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		copied := *candidate
+		items = append(items, &copied)
+	}
+	r.candidatesByRunID[runID] = items
+	return nil
+}
+
+func (r *memoryTraceRepository) GetLatestRunByProfile(_ context.Context, userID, profileID string) (*models.RecommendationRun, []*models.RecommendationCandidate, error) {
+	run := r.runsByProfile[userID+"|"+profileID]
+	if run == nil {
+		return nil, nil, errors.New("not found")
+	}
+	runCopy := *run
+	items := r.candidatesByRunID[run.ID]
+	out := make([]*models.RecommendationCandidate, 0, len(items))
+	for _, candidate := range items {
+		copied := *candidate
+		out = append(out, &copied)
+	}
+	return &runCopy, out, nil
+}
+
+func (r *memoryTraceRepository) GetCandidateByRecipeID(_ context.Context, userID, profileID, recipeID string) (*models.RecommendationCandidate, error) {
+	run := r.runsByProfile[userID+"|"+profileID]
+	if run == nil {
+		return nil, errors.New("not found")
+	}
+	for _, candidate := range r.candidatesByRunID[run.ID] {
+		if candidate.UserID == userID && candidate.ProfileID == profileID && candidate.ExternalRecipeID == recipeID {
+			copied := *candidate
+			return &copied, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
+type noopAuditRepository struct{}
+
+func (r *noopAuditRepository) Create(_ context.Context, _ *models.AuditEvent) error { return nil }
+
+type noopExternalIdentityRepository struct{}
+
+func (r *noopExternalIdentityRepository) GetByProviderSubject(_ context.Context, _, _, _ string) (*models.ExternalIdentity, error) {
+	return nil, errors.New("not found")
+}
+func (r *noopExternalIdentityRepository) Create(_ context.Context, _ *models.ExternalIdentity) error {
+	return nil
+}
+func (r *noopExternalIdentityRepository) UpdateLogin(_ context.Context, _, _, _ string, _ bool, _ time.Time) error {
+	return nil
+}
+
+type fakeRecipeSearcher struct{}
+
+func (s *fakeRecipeSearcher) Search(_ context.Context, _ spoonacular.SearchOptions) (*spoonacular.SearchResponse, error) {
+	return &spoonacular.SearchResponse{
+		Results: []spoonacular.Recipe{
+			{
+				ID:      101,
+				Title:   "Chicken Quinoa Bowl",
+				Summary: "Balanced grilled chicken bowl.",
+				Nutrition: spoonacular.Nutrition{
+					Nutrients: []spoonacular.Nutrient{
+						{Name: "Calories", Amount: 520},
+						{Name: "Protein", Amount: 42},
+						{Name: "Carbohydrates", Amount: 42},
+						{Name: "Fat", Amount: 14},
+						{Name: "Sugar", Amount: 8},
+						{Name: "Sodium", Amount: 380},
+					},
+				},
+				ExtendedIngredients: []spoonacular.Ingredient{
+					{Name: "chicken"},
+					{Name: "quinoa"},
+				},
+			},
+		},
+	}, nil
+}
+
+func testConfig() *config.Config {
+	return &config.Config{
+		AppEnv:             "test",
+		BodyLimitBytes:     1024 * 1024,
+		JWTSecret:          "abcdefghijklmnopqrstuvwxyz123456",
+		JWTIssuer:          "nutrimatch-test",
+		JWTAudience:        "nutrimatch-users",
+		AccessTokenTTL:     15 * time.Minute,
+		RefreshTokenTTL:    24 * time.Hour,
+		SessionIdleTTL:     12 * time.Hour,
+		AuthFailureWindow:  15 * time.Minute,
+		AuthMaxFailures:    5,
+		RefreshTokenPepper: "1234567890abcdefghijklmnopqrstuvwxyz",
+		HealthDataKey:      "1234567890abcdefghijklmnopqrstuvwxyz",
+		Argon2Time:         2,
+		Argon2Memory:       65536,
+		Argon2Threads:      1,
+		Argon2KeyLength:    32,
+		Argon2SaltLength:   16,
+		CookieNameRefresh:  "nm_refresh",
+		CookieNameCSRF:     "nm_csrf",
+		CookieNameOIDC:     "nm_oidc",
+		CookiePathRefresh:  "/api/v1/auth",
+		CookiePathCSRF:     "/api/v1",
+		CookieSameSite:     "Lax",
+		CSRFHeaderName:     "X-CSRF-Token",
+		CSRFTTL:            30 * time.Minute,
+		TrustedOrigins:     []string{"http://frontend.test"},
+		FrontendBaseURL:    "http://frontend.test",
+		CookieSecure:       false,
+	}
+}
+
+type testServerOptions struct {
+	quota            *security.QuotaManager
+	authMaxFailures  int
+	authFailureWindow time.Duration
+}
+
+func setupTestServer(t *testing.T) (*httptest.Server, *http.Client, *config.Config) {
+	return setupTestServerWithOptions(t, testServerOptions{})
+}
+
+func setupTestServerWithOptions(t *testing.T, opts testServerOptions) (*httptest.Server, *http.Client, *config.Config) {
+	t.Helper()
+	middleware.ResetRateLimitStateForTest()
+
+	cfg := testConfig()
+	if opts.authMaxFailures > 0 {
+		cfg.AuthMaxFailures = opts.authMaxFailures
+	}
+	if opts.authFailureWindow > 0 {
+		cfg.AuthFailureWindow = opts.authFailureWindow
+	}
+	userRepo := newMemoryUserRepository()
+	profileRepo := &memoryProfileRepository{}
+	sessionRepo := newMemorySessionRepository()
+	authFailureRepo := &memoryAuthFailureRepository{}
+	medicalRuleRepo := &memoryMedicalRuleRepository{}
+	traceRepo := &memoryTraceRepository{}
+	auditRepo := &noopAuditRepository{}
+	externalRepo := &noopExternalIdentityRepository{}
+
+	tokens := &security.TokenManager{
+		Secret:      []byte(cfg.JWTSecret),
+		Issuer:      cfg.JWTIssuer,
+		Audience:    cfg.JWTAudience,
+		AccessTTL:   cfg.AccessTokenTTL,
+		RefreshTTL:  cfg.RefreshTokenTTL,
+		TokenPepper: []byte(cfg.RefreshTokenPepper),
+	}
+	csrfManager := &security.CSRFManager{
+		Secret: []byte(cfg.JWTSecret),
+		TTL:    cfg.CSRFTTL,
+	}
+
+	authService := &services.AuthService{
+		Users:          userRepo,
+		Sessions:       sessionRepo,
+		Failures:       authFailureRepo,
+		Tokens:         tokens,
+		SessionIdleTTL: cfg.SessionIdleTTL,
+		FailureWindow:  cfg.AuthFailureWindow,
+		MaxFailures:    cfg.AuthMaxFailures,
+		PasswordParams: security.Argon2Params{
+			Time:       cfg.Argon2Time,
+			Memory:     cfg.Argon2Memory,
+			Threads:    cfg.Argon2Threads,
+			KeyLength:  cfg.Argon2KeyLength,
+			SaltLength: cfg.Argon2SaltLength,
+		},
+	}
+	auditService := &services.AuditService{Repo: auditRepo}
+	accessPolicyService := &services.AccessPolicyService{}
+	nutritionProfileService := &services.NutritionProfileService{
+		Profiles:     profileRepo,
+		MedicalRules: medicalRuleRepo,
+	}
+	profileService := &services.ProfileService{
+		Profiles:     profileRepo,
+		Users:        userRepo,
+		Nutrition:    nutritionProfileService,
+		MedicalRules: medicalRuleRepo,
+	}
+	recommendationService := &services.RecommendationService{
+		Profiles:     profileService,
+		Recipes:      &fakeRecipeSearcher{},
+		MedicalRules: medicalRuleRepo,
+		Traces:       traceRepo,
+		Quota:        opts.quota,
+	}
+
+	authHandler := &handlers.AuthHandler{
+		Cfg:   cfg,
+		Auth:  authService,
+		Users: userRepo,
+		CSRF:  csrfManager,
+		Audit: auditService,
+	}
+	profileHandler := &handlers.ProfileHandler{
+		Profiles: profileService,
+		Audit:    auditService,
+		Access:   accessPolicyService,
+	}
+	recommendationHandler := &handlers.RecommendationHandler{
+		Service: recommendationService,
+		Audit:   auditService,
+		Access:  accessPolicyService,
+	}
+	router := SetupRouter(cfg, tokens, csrfManager, sessionRepo, authHandler, profileHandler, recommendationHandler, &handlers.HealthHandler{})
+
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+
+	client := newClientWithJar(t)
+
+	_ = externalRepo
+	return server, client, cfg
+}
+
+func newClientWithJar(t *testing.T) *http.Client {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("failed to create cookie jar: %v", err)
+	}
+	return &http.Client{Jar: jar}
+}
+
+func csrfTokenFromClient(t *testing.T, client *http.Client, baseURL string, cfg *config.Config) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/auth/csrf", nil)
+	if err != nil {
+		t.Fatalf("failed to create csrf request: %v", err)
+	}
+	req.Header.Set("Origin", cfg.TrustedOrigins[0])
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("failed csrf request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected csrf status 200, got %d", resp.StatusCode)
+	}
+
+	var payload map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode csrf response: %v", err)
+	}
+
+	return payload["csrf_token"]
+}
+
+func doJSON(t *testing.T, client *http.Client, method, endpoint string, body any, headers map[string]string) *http.Response {
+	t.Helper()
+
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("failed to marshal body: %v", err)
+		}
+		reader = bytes.NewReader(payload)
+	}
+
+	req, err := http.NewRequest(method, endpoint, reader)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	return resp
+}
+
+func decodeJSONBody(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	defer resp.Body.Close()
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode response body: %v", err)
+	}
+	return payload
+}
+
+func registerUser(t *testing.T, client *http.Client, serverURL string, cfg *config.Config, name, email string) string {
+	t.Helper()
+	csrfToken := csrfTokenFromClient(t, client, serverURL, cfg)
+	resp := doJSON(t, client, http.MethodPost, serverURL+"/api/v1/auth/register", map[string]string{
+		"name":     name,
+		"email":    email,
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected register status 200, got %d", resp.StatusCode)
+	}
+	payload := decodeJSONBody(t, resp)
+	accessToken := strings.TrimSpace(payload["access_token"].(string))
+	if accessToken == "" {
+		t.Fatalf("expected access token after registration")
+	}
+	return accessToken
+}
+
+func defaultProfilePayload(fullName string) map[string]any {
+	return map[string]any{
+		"personal": map[string]any{
+			"fullName":   fullName,
+			"age":        25,
+			"sex":        "male",
+			"weight":     75,
+			"height":     180,
+			"profession": "Student",
+			"city":       "Lagos",
+		},
+		"lifestyle": map[string]any{
+			"activityLevel": "light",
+			"lifestyleType": "student",
+			"goal":          "weight_loss",
+		},
+		"preferences": map[string]any{
+			"likes":       []string{"chicken", "quinoa"},
+			"dislikes":    []string{"bacon"},
+			"mealStyles":  []string{"healthy", "balanced"},
+			"mealsPerDay": 3,
+		},
+		"constraints": map[string]any{
+			"allergies":           []string{"dairy"},
+			"conditions":          []string{},
+			"excludedIngredients": []string{"grapefruit"},
+			"hasChronicDisease":   false,
+			"chronicDiseases":     []string{},
+			"takesMedication":     false,
+			"medications":         "",
+		},
+	}
+}
+
+func upsertProfileForToken(t *testing.T, client *http.Client, serverURL, accessToken string, payload map[string]any) string {
+	t.Helper()
+	resp := doJSON(t, client, http.MethodPost, serverURL+"/api/v1/profile", payload, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected profile status 200, got %d", resp.StatusCode)
+	}
+	result := decodeJSONBody(t, resp)
+	profileID := strings.TrimSpace(result["profileId"].(string))
+	if profileID == "" {
+		t.Fatalf("expected profile id")
+	}
+	return profileID
+}
+
+func TestRouterRegisterProfileRecommendationFlow(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+
+	csrfToken := csrfTokenFromClient(t, client, server.URL, cfg)
+
+	registerResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/register", map[string]string{
+		"name":     "Oussama Test",
+		"email":    "oussa@example.com",
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
+	})
+	if registerResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected register status 200, got %d", registerResp.StatusCode)
+	}
+	registerPayload := decodeJSONBody(t, registerResp)
+	accessToken := strings.TrimSpace(registerPayload["access_token"].(string))
+	if accessToken == "" {
+		t.Fatalf("expected access token")
+	}
+
+	profilePayload := map[string]any{
+		"personal": map[string]any{
+			"fullName":   "Oussama Test",
+			"age":        25,
+			"sex":        "male",
+			"weight":     75,
+			"height":     180,
+			"profession": "Student",
+			"city":       "Lagos",
+		},
+		"lifestyle": map[string]any{
+			"activityLevel": "light",
+			"lifestyleType": "student",
+			"goal":          "weight_loss",
+		},
+		"preferences": map[string]any{
+			"likes":       []string{"chicken", "quinoa"},
+			"dislikes":    []string{"bacon"},
+			"mealStyles":  []string{"healthy", "balanced"},
+			"mealsPerDay": 3,
+		},
+		"constraints": map[string]any{
+			"allergies":           []string{"dairy"},
+			"conditions":          []string{},
+			"excludedIngredients": []string{"grapefruit"},
+			"hasChronicDisease":   false,
+			"chronicDiseases":     []string{},
+			"takesMedication":     false,
+			"medications":         "",
+		},
+	}
+
+	profileResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/profile", profilePayload, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if profileResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected profile status 200, got %d", profileResp.StatusCode)
+	}
+	profileResult := decodeJSONBody(t, profileResp)
+	profileID := profileResult["profileId"].(string)
+	if profileID == "" {
+		t.Fatalf("expected profile id")
+	}
+
+	getProfileResp := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/profile", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if getProfileResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected get profile status 200, got %d", getProfileResp.StatusCode)
+	}
+
+	recommendationResp := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/recommendations/"+profileID, nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if recommendationResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected recommendation status 200, got %d", recommendationResp.StatusCode)
+	}
+	recommendationPayload := decodeJSONBody(t, recommendationResp)
+	meals, ok := recommendationPayload["meals"].([]any)
+	if !ok || len(meals) == 0 {
+		t.Fatalf("expected at least one recommendation")
+	}
+}
+
+func TestRouterRejectsRegisterWithoutValidCSRF(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+
+	resp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/register", map[string]string{
+		"name":     "Oussama Test",
+		"email":    "oussa2@example.com",
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: "invalid-token",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected forbidden without valid csrf, got %d", resp.StatusCode)
+	}
+}
+
+func TestRouterLoginAndRefreshFlow(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+
+	csrfToken := csrfTokenFromClient(t, client, server.URL, cfg)
+	registerResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/register", map[string]string{
+		"name":     "Refresh User",
+		"email":    "refresh@example.com",
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
+	})
+	if registerResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected register status 200, got %d", registerResp.StatusCode)
+	}
+	registerResp.Body.Close()
+
+	loginCSRF := csrfTokenFromClient(t, client, server.URL, cfg)
+	loginResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/login", map[string]string{
+		"email":    "refresh@example.com",
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: loginCSRF,
+	})
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected login status 200, got %d", loginResp.StatusCode)
+	}
+	loginPayload := decodeJSONBody(t, loginResp)
+	firstAccess := loginPayload["access_token"].(string)
+
+	refreshCSRF := csrfTokenFromClient(t, client, server.URL, cfg)
+	refreshResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/refresh", nil, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: refreshCSRF,
+	})
+	if refreshResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected refresh status 200, got %d", refreshResp.StatusCode)
+	}
+	refreshPayload := decodeJSONBody(t, refreshResp)
+	secondAccess := refreshPayload["access_token"].(string)
+
+	if firstAccess == secondAccess {
+		t.Fatalf("expected rotated access token after refresh")
+	}
+}
+
+func TestRouterRejectsProfilePayloadWithUnknownFields(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+
+	csrfToken := csrfTokenFromClient(t, client, server.URL, cfg)
+	registerResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/register", map[string]string{
+		"name":     "Schema User",
+		"email":    "schema@example.com",
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
+	})
+	if registerResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected register status 200, got %d", registerResp.StatusCode)
+	}
+	registerPayload := decodeJSONBody(t, registerResp)
+	accessToken := strings.TrimSpace(registerPayload["access_token"].(string))
+
+	profilePayload := map[string]any{
+		"personal": map[string]any{
+			"fullName":   "Schema User",
+			"age":        25,
+			"sex":        "male",
+			"weight":     75,
+			"height":     180,
+			"profession": "Student",
+			"city":       "Lagos",
+			"unexpected": "field",
+		},
+		"lifestyle": map[string]any{
+			"activityLevel": "light",
+			"lifestyleType": "student",
+			"goal":          "weight_loss",
+		},
+		"preferences": map[string]any{
+			"likes":       []string{"chicken"},
+			"dislikes":    []string{},
+			"mealStyles":  []string{"healthy"},
+			"mealsPerDay": 3,
+		},
+		"constraints": map[string]any{
+			"allergies":           []string{},
+			"conditions":          []string{},
+			"excludedIngredients": []string{},
+			"hasChronicDisease":   false,
+			"chronicDiseases":     []string{},
+			"takesMedication":     false,
+			"medications":         "",
+		},
+	}
+
+	profileResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/profile", profilePayload, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	defer profileResp.Body.Close()
+
+	if profileResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected profile validation status 400 for unknown field, got %d", profileResp.StatusCode)
+	}
+}
+
+func TestRouterRejectsProtectedEndpointsWithoutBearerToken(t *testing.T) {
+	server, client, _ := setupTestServer(t)
+
+	resp := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/profile", nil, map[string]string{})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without bearer token, got %d", resp.StatusCode)
+	}
+}
+
+func TestRouterRejectsAuthOriginOutsideTrustedList(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+
+	csrfToken := csrfTokenFromClient(t, client, server.URL, cfg)
+	resp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/register", map[string]string{
+		"name":     "Origin User",
+		"email":    "origin@example.com",
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           "http://evil.test",
+		cfg.CSRFHeaderName: csrfToken,
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected forbidden for non-trusted origin, got %d", resp.StatusCode)
+	}
+}
+
+func TestRouterRejectsForeignRecommendationProfileAccess(t *testing.T) {
+	server, clientA, cfg := setupTestServer(t)
+	clientB := newClientWithJar(t)
+
+	accessTokenA := registerUser(t, clientA, server.URL, cfg, "User A", "usera@example.com")
+	profileIDA := upsertProfileForToken(t, clientA, server.URL, accessTokenA, defaultProfilePayload("User A"))
+
+	accessTokenB := registerUser(t, clientB, server.URL, cfg, "User B", "userb@example.com")
+	upsertProfileForToken(t, clientB, server.URL, accessTokenB, defaultProfilePayload("User B"))
+
+	resp := doJSON(t, clientB, http.MethodGet, server.URL+"/api/v1/recommendations/"+profileIDA, nil, map[string]string{
+		"Authorization": "Bearer " + accessTokenB,
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for foreign profile access, got %d", resp.StatusCode)
+	}
+}
+
+func TestRouterRecommendationQuotaExceeded(t *testing.T) {
+	server, client, cfg := setupTestServerWithOptions(t, testServerOptions{
+		quota: security.NewQuotaManager(rate.Every(time.Hour), 1),
+	})
+
+	accessToken := registerUser(t, client, server.URL, cfg, "Quota User", "quota@example.com")
+	profileID := upsertProfileForToken(t, client, server.URL, accessToken, defaultProfilePayload("Quota User"))
+
+	first := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/recommendations/"+profileID, nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("expected first recommendation status 200, got %d", first.StatusCode)
+	}
+	first.Body.Close()
+
+	second := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/recommendations/"+profileID, nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	defer second.Body.Close()
+
+	if second.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 when recommendation quota is exceeded, got %d", second.StatusCode)
+	}
+}
+
+func TestRouterRateLimitTriggersOnRepeatedLoginAttempts(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+
+	registerUser(t, client, server.URL, cfg, "Rate User", "rate@example.com")
+	loginCSRF := csrfTokenFromClient(t, client, server.URL, cfg)
+
+	statuses := make([]int, 0, 6)
+	for i := 0; i < 6; i++ {
+		resp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/login", map[string]string{
+			"email":    "rate@example.com",
+			"password": "VeryStrongPass123!",
+		}, map[string]string{
+			"Origin":           cfg.TrustedOrigins[0],
+			cfg.CSRFHeaderName: loginCSRF,
+		})
+		statuses = append(statuses, resp.StatusCode)
+		resp.Body.Close()
+	}
+
+	if statuses[len(statuses)-1] != http.StatusTooManyRequests {
+		t.Fatalf("expected final login attempt to be rate limited, got sequence %v", statuses)
+	}
+}
+
+func TestRouterTemporarilyBlocksLoginAfterRepeatedFailures(t *testing.T) {
+	server, client, cfg := setupTestServerWithOptions(t, testServerOptions{
+		authMaxFailures:  3,
+		authFailureWindow: 15 * time.Minute,
+	})
+
+	registerUser(t, client, server.URL, cfg, "Block User", "block@example.com")
+	loginCSRF := csrfTokenFromClient(t, client, server.URL, cfg)
+
+	for i := 0; i < 3; i++ {
+		resp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/login", map[string]string{
+			"email":    "block@example.com",
+			"password": "WrongPassword123!",
+		}, map[string]string{
+			"Origin":           cfg.TrustedOrigins[0],
+			cfg.CSRFHeaderName: loginCSRF,
+		})
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected unauthorized on failed login attempt %d, got %d", i+1, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	blockedResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/auth/login", map[string]string{
+		"email":    "block@example.com",
+		"password": "VeryStrongPass123!",
+	}, map[string]string{
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: loginCSRF,
+	})
+	defer blockedResp.Body.Close()
+
+	if blockedResp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected temporary auth block status 429, got %d", blockedResp.StatusCode)
+	}
+}

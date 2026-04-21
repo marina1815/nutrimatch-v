@@ -34,7 +34,10 @@ func main() {
 	sessionRepo := gormrepo.NewSessionRepository(db)
 	medicalRuleRepo := gormrepo.NewMedicalRuleRepository(db)
 	recommendationTraceRepo := gormrepo.NewRecommendationTraceRepository(db)
+	searchResponseCacheRepo := gormrepo.NewSearchResponseCacheRepository(db)
 	auditRepo := gormrepo.NewAuditRepository(db)
+	authFailureRepo := gormrepo.NewAuthFailureRepository(db)
+	rateLimitBucketRepo := gormrepo.NewRateLimitBucketRepository(db)
 	externalIdentityRepo := gormrepo.NewExternalIdentityRepository(db)
 	txManager := gormrepo.NewTxManager(db)
 
@@ -59,13 +62,18 @@ func main() {
 		log.Fatal(err)
 	}
 	recommendationCache := security.NewTTLCache[*dto.RecommendationResponse](3 * time.Minute)
-	recommendationQuota := security.NewQuotaManager(rate.Every(2*time.Second), 3)
+	searchCache := security.NewTTLCache[*spoonacular.SearchResponse](2 * time.Minute)
+	recommendationQuota := security.NewPersistentQuotaManager(rateLimitBucketRepo, rate.Every(2*time.Second), 3)
 
 	authService := &services.AuthService{
-		Users:     userRepo,
-		Sessions:  sessionRepo,
-		TxManager: txManager,
-		Tokens:    tokens,
+		Users:          userRepo,
+		Sessions:       sessionRepo,
+		Failures:       authFailureRepo,
+		TxManager:      txManager,
+		Tokens:         tokens,
+		SessionIdleTTL: cfg.SessionIdleTTL,
+		FailureWindow:  cfg.AuthFailureWindow,
+		MaxFailures:    cfg.AuthMaxFailures,
 		PasswordParams: security.Argon2Params{
 			Time:       cfg.Argon2Time,
 			Memory:     cfg.Argon2Memory,
@@ -91,10 +99,22 @@ func main() {
 		MedicalRules: medicalRuleRepo,
 	}
 	similarityService := &services.SimilarityService{Profiles: profileRepo}
+	ingredientService := &services.IngredientService{}
 
 	recipeClient := &spoonacular.Client{
 		BaseURL: cfg.SpoonacularBaseURL,
 		APIKey:  cfg.SpoonacularAPIKey,
+	}
+	ingredientService.Client = recipeClient
+	recipeSearcher := &spoonacular.ResilientSearcher{
+		Base:                    recipeClient,
+		Cache:                   searchCache,
+		Persistent:              searchResponseCacheRepo,
+		PersistentTTL:           cfg.SpoonacularSearchCacheTTL,
+		MaxRetries:              1,
+		RetryDelay:              150 * time.Millisecond,
+		CircuitBreakerThreshold: cfg.SpoonacularCircuitFailures,
+		CircuitBreakerCooldown:  cfg.SpoonacularCircuitCooldown,
 	}
 	aiClient := &googleai.Client{
 		BaseURL: cfg.GoogleAIBaseURL,
@@ -104,7 +124,7 @@ func main() {
 
 	recommendationService := &services.RecommendationService{
 		Profiles:     profileService,
-		Recipes:      recipeClient,
+		Recipes:      recipeSearcher,
 		AI:           aiClient,
 		MedicalRules: medicalRuleRepo,
 		Traces:       recommendationTraceRepo,
@@ -132,9 +152,10 @@ func main() {
 	}
 
 	profileHandler := &handlers.ProfileHandler{
-		Profiles: profileService,
-		Audit:    auditService,
-		Access:   accessPolicyService,
+		Profiles:    profileService,
+		Ingredients: ingredientService,
+		Audit:       auditService,
+		Access:      accessPolicyService,
 	}
 	recHandler := &handlers.RecommendationHandler{
 		Service: recommendationService,
@@ -143,7 +164,7 @@ func main() {
 	}
 	healthHandler := &handlers.HealthHandler{}
 
-	router := routes.SetupRouter(cfg, tokens, csrfManager, sessionRepo, authHandler, profileHandler, recHandler, healthHandler)
+	router := routes.SetupRouter(cfg, tokens, csrfManager, sessionRepo, rateLimitBucketRepo, authHandler, profileHandler, recHandler, healthHandler)
 	server := &http.Server{
 		Addr:              ":" + cfg.AppPort,
 		Handler:           router,

@@ -1,15 +1,19 @@
 import { Checkbox } from "@/components/ui/Checkbox";
+import { IngredientAutocompleteInput } from "@/components/forms/IngredientAutocompleteInput";
 import {
   CHRONIC_DISEASE_OPTIONS,
   COMMON_ALLERGIES,
   COMMON_CONDITIONS,
 } from "@/lib/constants";
-import { UserProfile } from "@/lib/types";
+import { ChronicDisease, Condition, Intolerance, UserProfile } from "@/lib/types";
 
 type Props = {
   data: UserProfile;
   setData: React.Dispatch<React.SetStateAction<UserProfile>>;
   errors?: {
+    allergies?: string;
+    conditions?: string;
+    excludedIngredients?: string;
     chronicDiseases?: string;
     medications?: string;
   };
@@ -18,17 +22,21 @@ type Props = {
 export function ConstraintsStep({ data, setData, errors }: Props) {
   const toggleArrayValue = (
     section: "allergies" | "conditions",
-    value: string
+    value: string,
   ) => {
     setData((prev) => {
       const current = prev.constraints[section];
-      const exists = current.includes(value);
+      const typedValue =
+        section === "allergies" ? (value as Intolerance) : (value as Condition);
+      const exists = current.includes(typedValue as never);
 
       return {
         ...prev,
         constraints: {
           ...prev.constraints,
-          [section]: exists ? current.filter((item) => item !== value) : [...current, value],
+          [section]: exists
+            ? current.filter((item) => item !== typedValue)
+            : [...current, typedValue],
         },
       };
     });
@@ -36,15 +44,16 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
 
   const toggleDisease = (value: string) => {
     setData((prev) => {
-      const exists = prev.constraints.chronicDiseases.includes(value as any);
+      const disease = value as ChronicDisease;
+      const exists = prev.constraints.chronicDiseases.includes(disease);
 
       return {
         ...prev,
         constraints: {
           ...prev.constraints,
           chronicDiseases: exists
-            ? prev.constraints.chronicDiseases.filter((item) => item !== value)
-            : [...prev.constraints.chronicDiseases, value as any],
+            ? prev.constraints.chronicDiseases.filter((item) => item !== disease)
+            : [...prev.constraints.chronicDiseases, disease],
         },
       };
     });
@@ -57,49 +66,47 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
         <div className="nm-check-grid">
           {COMMON_ALLERGIES.map((item) => (
             <Checkbox
-              key={item}
-              label={item}
-              checked={data.constraints.allergies.includes(item)}
-              onChange={() => toggleArrayValue("allergies", item)}
+              key={item.value}
+              label={item.label}
+              checked={data.constraints.allergies.includes(item.value)}
+              onChange={() => toggleArrayValue("allergies", item.value)}
             />
           ))}
         </div>
+        {errors?.allergies && <span className="nm-error">{errors.allergies}</span>}
       </div>
 
       <div className="nm-field">
-        <label className="nm-label">Autres contraintes de santé</label>
+        <label className="nm-label">Autres contraintes de sante</label>
         <div className="nm-check-grid">
           {COMMON_CONDITIONS.map((item) => (
             <Checkbox
-              key={item}
-              label={item}
-              checked={data.constraints.conditions.includes(item)}
-              onChange={() => toggleArrayValue("conditions", item)}
+              key={item.value}
+              label={item.label}
+              checked={data.constraints.conditions.includes(item.value)}
+              onChange={() => toggleArrayValue("conditions", item.value)}
             />
           ))}
         </div>
+        {errors?.conditions && <span className="nm-error">{errors.conditions}</span>}
       </div>
 
-      <div className="nm-field">
-        <label className="nm-label">Ingrédients à exclure</label>
-        <input
-          className="nm-input"
-          placeholder="Porc, crevettes, sucre..."
-          value={data.constraints.excludedIngredients.join(", ")}
-          onChange={(e) =>
-            setData((prev) => ({
-              ...prev,
-              constraints: {
-                ...prev.constraints,
-                excludedIngredients: e.target.value
-                  .split(",")
-                  .map((item) => item.trim())
-                  .filter(Boolean),
-              },
-            }))
-          }
-        />
-      </div>
+      <IngredientAutocompleteInput
+        label="Ingredients a exclure"
+        placeholder="Porc, crevettes, sucre..."
+        values={data.constraints.excludedIngredients}
+        onChange={(nextValues) =>
+          setData((prev) => ({
+            ...prev,
+            constraints: {
+              ...prev.constraints,
+              excludedIngredients: nextValues,
+            },
+          }))
+        }
+        error={errors?.excludedIngredients}
+        maxItems={30}
+      />
 
       <div className="nm-field">
         <label className="nm-label">As-tu une maladie chronique ?</label>
@@ -144,7 +151,7 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
               <Checkbox
                 key={item.value}
                 label={item.label}
-                checked={data.constraints.chronicDiseases.includes(item.value as any)}
+                checked={data.constraints.chronicDiseases.includes(item.value as ChronicDisease)}
                 onChange={() => toggleDisease(item.value)}
               />
             ))}
@@ -156,7 +163,7 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
       )}
 
       <div className="nm-field">
-        <label className="nm-label">Prends-tu des médicaments ?</label>
+        <label className="nm-label">Prends-tu des medicaments ?</label>
         <div className="nm-inline-actions">
           <button
             type="button"
@@ -195,6 +202,7 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
           <label className="nm-label">Lesquels ?</label>
           <input
             className={`nm-input ${errors?.medications ? "nm-input-error" : ""}`}
+            maxLength={250}
             placeholder="Ex: metformine, antihypertenseur..."
             value={data.constraints.medications}
             onChange={(e) =>

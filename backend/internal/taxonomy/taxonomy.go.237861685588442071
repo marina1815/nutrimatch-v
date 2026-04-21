@@ -1,0 +1,293 @@
+package taxonomy
+
+import "strings"
+
+type aliasTable map[string]string
+
+var intoleranceAliases = aliasTable{
+	"dairy":       "dairy",
+	"milk":        "dairy",
+	"lait":        "dairy",
+	"egg":         "egg",
+	"eggs":        "egg",
+	"oeuf":        "egg",
+	"oeufs":       "egg",
+	"gluten":      "gluten",
+	"grain":       "grain",
+	"grains":      "grain",
+	"peanut":      "peanut",
+	"peanuts":     "peanut",
+	"arachide":    "peanut",
+	"arachides":   "peanut",
+	"seafood":     "seafood",
+	"poisson":     "seafood",
+	"fish":        "seafood",
+	"sesame":      "sesame",
+	"shellfish":   "shellfish",
+	"crustacean":  "shellfish",
+	"crustaceans": "shellfish",
+	"shrimp":      "shellfish",
+	"shrimps":     "shellfish",
+	"crevette":    "shellfish",
+	"crevettes":   "shellfish",
+	"fruits de mer": "shellfish",
+	"soy":           "soy",
+	"soja":          "soy",
+	"sulfite":       "sulfite",
+	"sulfites":      "sulfite",
+	"tree nut":      "tree_nut",
+	"tree nuts":     "tree_nut",
+	"nuts":          "tree_nut",
+	"noix":          "tree_nut",
+	"wheat":         "wheat",
+	"ble":           "wheat",
+}
+
+var conditionAliases = aliasTable{
+	"diabetes":               "diabetes",
+	"diabete":                "diabetes",
+	"diabete de type 1":      "diabetes",
+	"diabete de type 2":      "diabetes",
+	"hypertension":           "hypertension",
+	"tension elevee":         "hypertension",
+	"high blood pressure":    "hypertension",
+	"cardiac":                "cardiac",
+	"heart disease":          "cardiac",
+	"maladie cardiaque":      "cardiac",
+	"cardiopathie":           "cardiac",
+	"renal_failure":          "renal_failure",
+	"renal failure":          "renal_failure",
+	"kidney disease":         "renal_failure",
+	"insuffisance renale":    "renal_failure",
+	"hypercholesterolemia":   "hypercholesterolemia",
+	"cholesterol":            "hypercholesterolemia",
+	"cholesterol eleve":      "hypercholesterolemia",
+	"high cholesterol":       "hypercholesterolemia",
+	"digestive_sensitivity":  "digestive_sensitivity",
+	"sensibilite digestive":  "digestive_sensitivity",
+	"ibs":                    "digestive_sensitivity",
+	"trouble digestif":       "digestive_sensitivity",
+	"other":                  "other",
+	"autre":                  "other",
+}
+
+var mealStyleAliases = aliasTable{
+	"traditionnel":       "traditional",
+	"traditional":        "traditional",
+	"recettes saines":    "healthy",
+	"healthy":            "healthy",
+	"oriental":           "middle eastern",
+	"middle eastern":     "middle eastern",
+	"moderne":            "modern",
+	"modern":             "modern",
+	"repas froids":       "cold",
+	"cold":               "cold",
+	"rapide":             "quick",
+	"quick":              "quick",
+	"equilibre":          "balanced",
+	"equilibree":         "balanced",
+	"equilibrees":        "balanced",
+	"balanced":           "balanced",
+	"high protein":       "high-protein",
+	"high-protein":       "high-protein",
+	"riche en proteines": "high-protein",
+	"low sodium":         "low-sodium",
+	"pauvre en sodium":   "low-sodium",
+	"low sugar":          "low-sugar",
+	"pauvre en sucre":    "low-sugar",
+}
+
+var mealTypeAliases = aliasTable{
+	"main course":    "main_course",
+	"main_course":    "main_course",
+	"plat principal": "main_course",
+	"side dish":      "side_dish",
+	"side_dish":      "side_dish",
+	"accompagnement": "side_dish",
+	"breakfast":      "breakfast",
+	"petit dejeuner": "breakfast",
+	"lunch":          "lunch",
+	"dejeuner":       "lunch",
+	"dinner":         "dinner",
+	"diner":          "dinner",
+	"snack":          "snack",
+	"collation":      "snack",
+	"salad":          "salad",
+	"salade":         "salad",
+	"soup":           "soup",
+	"soupe":          "soup",
+	"dessert":        "dessert",
+	"appetizer":      "appetizer",
+	"entree":         "appetizer",
+	"beverage":       "beverage",
+	"boisson":        "beverage",
+}
+
+var cuisineAliases = aliasTable{
+	"african":         "african",
+	"africaine":       "african",
+	"american":        "american",
+	"americaine":      "american",
+	"asian":           "asian",
+	"asiatique":       "asian",
+	"mediterranean":   "mediterranean",
+	"mediterraneenne": "mediterranean",
+	"middle eastern":  "middle_eastern",
+	"middle_eastern":  "middle_eastern",
+	"moyen orient":    "middle_eastern",
+	"oriental":        "middle_eastern",
+	"european":        "european",
+	"europeenne":      "european",
+	"mexican":         "mexican",
+	"mexicaine":       "mexican",
+}
+
+func CanonicalizeIntolerance(input string) (string, bool) {
+	return canonicalize(intoleranceAliases, input)
+}
+
+func CanonicalizeCondition(input string) (string, bool) {
+	return canonicalize(conditionAliases, input)
+}
+
+func CanonicalizeMealStyle(input string) (string, bool) {
+	return canonicalize(mealStyleAliases, input)
+}
+
+func CanonicalizeMealType(input string) (string, bool) {
+	return canonicalize(mealTypeAliases, input)
+}
+
+func CanonicalizeCuisine(input string) (string, bool) {
+	return canonicalize(cuisineAliases, input)
+}
+
+func CanonicalizeIntoleranceList(values []string) []string {
+	return canonicalizeList(values, CanonicalizeIntolerance)
+}
+
+func CanonicalizeConditionList(values []string) []string {
+	return canonicalizeList(values, CanonicalizeCondition)
+}
+
+func CanonicalizeMealStyleList(values []string) []string {
+	return canonicalizeList(values, CanonicalizeMealStyle)
+}
+
+func CanonicalizeMealTypeList(values []string) []string {
+	return canonicalizeList(values, CanonicalizeMealType)
+}
+
+func CanonicalizeCuisineList(values []string) []string {
+	return canonicalizeList(values, CanonicalizeCuisine)
+}
+
+func SpoonacularIntoleranceList(values []string) []string {
+	return canonicalizeList(values, SpoonacularIntolerance)
+}
+
+func SpoonacularIntolerance(input string) (string, bool) {
+	key, ok := CanonicalizeIntolerance(input)
+	if !ok {
+		return "", false
+	}
+	if key == "tree_nut" {
+		return "tree nut", true
+	}
+	return key, true
+}
+
+func SpoonacularMealType(input string) (string, bool) {
+	key, ok := CanonicalizeMealType(input)
+	if !ok {
+		return "", false
+	}
+	return strings.ReplaceAll(key, "_", " "), true
+}
+
+func SpoonacularCuisine(input string) (string, bool) {
+	key, ok := CanonicalizeCuisine(input)
+	if !ok {
+		return "", false
+	}
+	if key == "middle_eastern" {
+		return "middle eastern", true
+	}
+	return key, true
+}
+
+func SpoonacularMealTypeList(values []string) []string {
+	return canonicalizeList(values, SpoonacularMealType)
+}
+
+func SpoonacularCuisineList(values []string) []string {
+	return canonicalizeList(values, SpoonacularCuisine)
+}
+
+func NormalizeLooseToken(input string) string {
+	return normalize(input)
+}
+
+func canonicalize(table aliasTable, input string) (string, bool) {
+	key := normalize(input)
+	if key == "" {
+		return "", false
+	}
+	value, ok := table[key]
+	return value, ok
+}
+
+func canonicalizeList(values []string, fn func(string) (string, bool)) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		canonical, ok := fn(value)
+		if !ok || canonical == "" {
+			continue
+		}
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		out = append(out, canonical)
+	}
+	return out
+}
+
+func normalize(input string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(input))
+	if trimmed == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"'", " ",
+		"-", " ",
+		"_", " ",
+		".", " ",
+		",", " ",
+		";", " ",
+		":", " ",
+		"(", " ",
+		")", " ",
+		"/", " ",
+		"\\", " ",
+		"é", "e",
+		"è", "e",
+		"ê", "e",
+		"ë", "e",
+		"à", "a",
+		"â", "a",
+		"ä", "a",
+		"î", "i",
+		"ï", "i",
+		"ô", "o",
+		"ö", "o",
+		"ù", "u",
+		"û", "u",
+		"ü", "u",
+		"ç", "c",
+		"œ", "oe",
+	)
+	normalized := replacer.Replace(trimmed)
+	return strings.Join(strings.Fields(normalized), " ")
+}

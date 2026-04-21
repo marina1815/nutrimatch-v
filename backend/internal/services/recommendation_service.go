@@ -16,6 +16,7 @@ import (
 	"github.com/marina1815/nutrimatch/internal/models"
 	"github.com/marina1815/nutrimatch/internal/repository"
 	"github.com/marina1815/nutrimatch/internal/security"
+	"github.com/marina1815/nutrimatch/internal/taxonomy"
 )
 
 var (
@@ -61,12 +62,66 @@ type aiRerank struct {
 	Explanation     string  `json:"explanation"`
 }
 
+type aiRerankPromptPayload struct {
+	Goal                 string                    `json:"goal"`
+	ActivityLevel        string                    `json:"activityLevel"`
+	PreferredMeals       []string                  `json:"preferredMeals"`
+	PreferredIngredients []string                  `json:"preferredIngredients"`
+	Candidates           []aiRerankPromptCandidate `json:"candidates"`
+}
+
+type aiRerankPromptCandidate struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Calories float64  `json:"calories"`
+	Protein  float64  `json:"protein"`
+	Carbs    float64  `json:"carbs"`
+	Fat      float64  `json:"fat"`
+	Tags     []string `json:"tags"`
+}
+
+type candidateFacts struct {
+	ingredients []string
+	description string
+	baseTags    []string
+	finalTags   []string
+	calories    float64
+	protein     float64
+	carbs       float64
+	fat         float64
+	sugar       float64
+	sodium      float64
+}
+
+type hardFilterResult struct {
+	rejectedReasons []string
+	filterDecisions map[string]any
+}
+
+type deterministicScoreResult struct {
+	score           float64
+	acceptedReasons []string
+	scoreBreakdown  map[string]any
+}
+
+type enrichedRecipe struct {
+	recipe       spoonacular.Recipe
+	sourcePlans  []string
+	cacheSources []string
+}
+
 func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, profileID, requestID string) (*dto.RecommendationResponse, error) {
 	if s.Recipes == nil {
 		return nil, errors.New("recipe client unavailable")
 	}
-	if s.Quota != nil && !s.Quota.Allow(userID) {
-		return nil, ErrRecommendationQuota
+	if s.Quota != nil {
+		allowed, err := s.Quota.Allow(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, ErrRecommendationQuota
+		}
 	}
 
 	profile, lifestyle, preferences, constraints, _, err := s.Profiles.Get(ctx, userID)
@@ -104,59 +159,13 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 	}
 
 	plans := buildSearchPlans(preferences, constraints, nutritionProfile, signals)
-	recipesByID := make(map[int]spoonacular.Recipe)
-	externalTrace := make(map[string]any)
-
-	for _, plan := range plans {
-		startedAt := time.Now()
-		resp, searchErr := s.Recipes.Search(ctx, spoonacular.SearchOptions{
-			Query:              plan.Query,
-			IncludeIngredients: plan.Include,
-			ExcludeIngredients: plan.Exclude,
-			Intolerances:       normalizeIntolerances(constraints.Allergies),
-			Number:             12,
-		})
-
-		externalTrace[plan.Name] = map[string]any{
-			"query":     plan.Query,
-			"include":   plan.Include,
-			"exclude":   plan.Exclude,
-			"latencyMs": time.Since(startedAt).Milliseconds(),
-			"resultCount": func() int {
-				if resp == nil {
-					return 0
-				}
-				return len(resp.Results)
-			}(),
-			"error": func() string {
-				if searchErr == nil {
-					return ""
-				}
-				return searchErr.Error()
-			}(),
-		}
-
-		if searchErr != nil || resp == nil {
-			continue
-		}
-		for _, recipe := range resp.Results {
-			if _, exists := recipesByID[recipe.ID]; exists {
-				continue
-			}
-			recipesByID[recipe.ID] = recipe
-		}
-	}
-
-	recipes := make([]spoonacular.Recipe, 0, len(recipesByID))
-	for _, recipe := range recipesByID {
-		recipes = append(recipes, recipe)
-	}
+	enrichedRecipes, externalTrace := s.searchAndEnrichRecipes(ctx, plans, lifestyle, preferences, constraints, nutritionProfile, matchedRules)
 
 	runID := uuid.NewString()
-	candidates := make([]*models.RecommendationCandidate, 0, len(recipes))
-	acceptedCandidates := make([]*models.RecommendationCandidate, 0, len(recipes))
+	candidates := make([]*models.RecommendationCandidate, 0, len(enrichedRecipes))
+	acceptedCandidates := make([]*models.RecommendationCandidate, 0, len(enrichedRecipes))
 
-	for _, recipe := range recipes {
+	for _, recipe := range enrichedRecipes {
 		candidate := s.evaluateCandidate(runID, userID, profile.ID, lifestyle, preferences, constraints, nutritionProfile, matchedRules, signals, recipe)
 		candidates = append(candidates, candidate)
 		if candidate.Accepted {
@@ -206,12 +215,15 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 		Status:             statusFromCandidates(len(meals)),
 		QuerySignature:     cacheKey,
 		SourceSummary: models.JSONMap{
-			"plans":            len(plans),
-			"similarityLikes":  signals.Likes,
-			"similarityStyles": signals.MealStyles,
+			"plans":               len(plans),
+			"enrichedRecipeCount": len(enrichedRecipes),
+			"similarityLikes":     signals.Likes,
+			"similarityStyles":    signals.MealStyles,
+			"similaritySources":   signals.Sources,
+			"semanticSimilarity":  signals.SemanticUsed,
 		},
 		DecisionSummary: models.JSONMap{
-			"sourceHierarchy": []string{"deterministic_rules", "health_filters", "external_recipe_api", "ai_rerank"},
+			"sourceHierarchy": []string{"external_recipe_api", "recipe_enrichment", "hard_filter", "deterministic_score", "ai_rerank_optional"},
 			"totalCandidates": len(candidates),
 			"accepted":        len(meals),
 			"rejected":        len(candidates) - len(meals),
@@ -317,6 +329,39 @@ func (s *RecommendationService) GetExplanation(ctx context.Context, userID, prof
 	}, nil
 }
 
+func (s *RecommendationService) searchAndEnrichRecipes(ctx context.Context, plans []searchPlan, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule) ([]enrichedRecipe, map[string]any) {
+	recipesByID := make(map[int]*enrichedRecipe)
+	externalTrace := make(map[string]any)
+
+	for _, plan := range plans {
+		startedAt := time.Now()
+		searchOpts := buildSearchOptions(plan, lifestyle, preferences, constraints, nutritionProfile, matchedRules)
+		resp, searchErr := s.Recipes.Search(ctx, searchOpts)
+		externalTrace[plan.Name] = buildExternalSearchTrace(searchOpts, resp, searchErr, time.Since(startedAt))
+		if searchErr != nil || resp == nil {
+			continue
+		}
+
+		enriched := enrichRecipesFromSearchPlan(plan.Name, resp)
+		for _, item := range enriched {
+			existing, ok := recipesByID[item.recipe.ID]
+			if !ok {
+				copied := item
+				recipesByID[item.recipe.ID] = &copied
+				continue
+			}
+			existing.sourcePlans = mergeLists(existing.sourcePlans, item.sourcePlans)
+			existing.cacheSources = mergeLists(existing.cacheSources, item.cacheSources)
+		}
+	}
+
+	out := make([]enrichedRecipe, 0, len(recipesByID))
+	for _, item := range recipesByID {
+		out = append(out, *item)
+	}
+	return out, externalTrace
+}
+
 func buildSearchPlans(preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, signals *SimilaritySignals) []searchPlan {
 	queryTerms := mergeLists([]string(preferences.MealStyles), []string(preferences.Likes), []string(nutritionProfile.RecommendedMealStyles))
 	include := mergeLists([]string(preferences.Likes), signals.Likes)
@@ -348,138 +393,138 @@ func buildSearchPlans(preferences *models.Preferences, constraints *models.Const
 	return plans
 }
 
-func (s *RecommendationService) evaluateCandidate(runID, userID, profileID string, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule, signals *SimilaritySignals, recipe spoonacular.Recipe) *models.RecommendationCandidate {
-	ingredients := extractIngredients(recipe.ExtendedIngredients)
-	calories, protein, carbs, fat, sugar, sodium := extractNutrients(recipe.Nutrition.Nutrients)
-	description := stripHTML(recipe.Summary)
-	heuristicTags := inferTags(recipe.Title, description, ingredients)
-
-	acceptedReasons := []string{}
-	rejectedReasons := []string{}
-	scoreBreakdown := map[string]any{}
-	filterDecisions := map[string]any{}
-
-	score := 40.0
-	if overlapCount(ingredients, []string(preferences.Likes)) > 0 {
-		score += 12
-		acceptedReasons = append(acceptedReasons, "ingredientes aligns with stated likes")
+func enrichRecipesFromSearchPlan(planName string, resp *spoonacular.SearchResponse) []enrichedRecipe {
+	if resp == nil {
+		return nil
 	}
-	if overlapCount(ingredients, signals.Likes) > 0 {
-		score += 6
-		acceptedReasons = append(acceptedReasons, "boosted by similar user preferences")
+	items := make([]enrichedRecipe, 0, len(resp.Results))
+	cacheSources := []string{}
+	if resp.CacheHit {
+		cacheSources = append(cacheSources, "persistent_or_memory_cache")
 	}
-	if overlapCount(heuristicTags, []string(nutritionProfile.RecommendedMealStyles)) > 0 {
-		score += 8
-		acceptedReasons = append(acceptedReasons, "matches recommended meal styles")
+	for _, recipe := range resp.Results {
+		items = append(items, enrichedRecipe{
+			recipe:       recipe,
+			sourcePlans:  []string{planName},
+			cacheSources: cacheSources,
+		})
 	}
+	return items
+}
 
-	blockedIngredients := mergeLists([]string(constraints.Allergies), []string(constraints.ExcludedIngredients), []string(nutritionProfile.DerivedExcluded))
-	if overlapCount(ingredients, blockedIngredients) > 0 {
-		rejectedReasons = append(rejectedReasons, "contains blocked ingredients")
-		filterDecisions["blockedIngredients"] = blockedIngredients
-	}
-
+func buildSearchOptions(plan searchPlan, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule) spoonacular.SearchOptions {
+	maxProtein := 0.0
 	for _, rule := range matchedRules {
-		if overlapCount(ingredients, []string(rule.BlockedIngredients)) > 0 {
-			rejectedReasons = append(rejectedReasons, "violates medical rule "+rule.Code)
+		if rule.MaxProteinGrams <= 0 {
+			continue
 		}
-		if overlapCount(heuristicTags, []string(rule.BlockedTags)) > 0 {
-			rejectedReasons = append(rejectedReasons, "matches blocked medical tag "+rule.Code)
+		if maxProtein == 0 || rule.MaxProteinGrams < maxProtein {
+			maxProtein = rule.MaxProteinGrams
 		}
 	}
 
-	if calories > nutritionProfile.MaxMealCalories {
-		rejectedReasons = append(rejectedReasons, "exceeds calorie ceiling")
-	}
-	if protein < nutritionProfile.MinProteinPerMeal {
-		rejectedReasons = append(rejectedReasons, "insufficient protein")
-	}
-	if carbs > nutritionProfile.MaxCarbsPerMeal {
-		rejectedReasons = append(rejectedReasons, "exceeds carbohydrate ceiling")
-	}
-	if fat > nutritionProfile.MaxFatPerMeal {
-		rejectedReasons = append(rejectedReasons, "exceeds fat ceiling")
-	}
-	if sugar > nutritionProfile.MaxSugarPerMeal {
-		rejectedReasons = append(rejectedReasons, "exceeds sugar ceiling")
-	}
-	if sodium > nutritionProfile.MaxSodiumMgPerMeal {
-		rejectedReasons = append(rejectedReasons, "exceeds sodium ceiling")
+	mealType := ""
+	preferredCuisines := []string{}
+	excludedCuisines := []string{}
+	if preferences != nil {
+		mealTypes := taxonomy.SpoonacularMealTypeList([]string(preferences.MealTypes))
+		if len(mealTypes) > 0 {
+			mealType = mealTypes[0]
+		}
+		preferredCuisines = taxonomy.SpoonacularCuisineList([]string(preferences.PreferredCuisines))
+		excludedCuisines = taxonomy.SpoonacularCuisineList([]string(preferences.ExcludedCuisines))
 	}
 
-	if len(rejectedReasons) == 0 {
-		acceptedReasons = append(acceptedReasons, "passes deterministic nutrition firewall")
-		score += nutrientAlignmentBonus(calories, protein, carbs, fat, nutritionProfile)
-	} else {
-		score = 0
+	maxReadyTime := 45
+	if lifestyle != nil && lifestyle.MaxReadyTime > 0 {
+		maxReadyTime = lifestyle.MaxReadyTime
 	}
 
-	scoreBreakdown["base"] = 40
-	scoreBreakdown["finalBeforeAI"] = score
-	scoreBreakdown["nutrientAlignment"] = nutrientAlignmentBonus(calories, protein, carbs, fat, nutritionProfile)
-	scoreBreakdown["preferenceOverlap"] = overlapCount(ingredients, []string(preferences.Likes))
-	scoreBreakdown["similarityOverlap"] = overlapCount(ingredients, signals.Likes)
-	filterDecisions["matchedRuleCodes"] = extractRuleCodes(matchedRules)
-	filterDecisions["thresholds"] = map[string]any{
-		"maxMealCalories":    nutritionProfile.MaxMealCalories,
-		"minProteinPerMeal":  nutritionProfile.MinProteinPerMeal,
-		"maxCarbsPerMeal":    nutritionProfile.MaxCarbsPerMeal,
-		"maxFatPerMeal":      nutritionProfile.MaxFatPerMeal,
-		"maxSugarPerMeal":    nutritionProfile.MaxSugarPerMeal,
-		"maxSodiumMgPerMeal": nutritionProfile.MaxSodiumMgPerMeal,
+	return spoonacular.SearchOptions{
+		Query:              plan.Query,
+		Cuisine:            preferredCuisines,
+		ExcludeCuisine:     excludedCuisines,
+		Type:               mealType,
+		IncludeIngredients: plan.Include,
+		ExcludeIngredients: plan.Exclude,
+		Intolerances:       normalizeIntolerances(constraints.Allergies),
+		MaxReadyTime:       maxReadyTime,
+		Number:             12,
+		MaxCalories:        nutritionProfile.MaxMealCalories,
+		MinProtein:         nutritionProfile.MinProteinPerMeal,
+		MaxProtein:         maxProtein,
+		MaxCarbs:           nutritionProfile.MaxCarbsPerMeal,
+		MaxFat:             nutritionProfile.MaxFatPerMeal,
+		MaxSugar:           nutritionProfile.MaxSugarPerMeal,
+		MaxSodium:          nutritionProfile.MaxSodiumMgPerMeal,
 	}
+}
+
+func (s *RecommendationService) evaluateCandidate(runID, userID, profileID string, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule, signals *SimilaritySignals, recipe enrichedRecipe) *models.RecommendationCandidate {
+	facts := buildCandidateFacts(recipe.recipe, lifestyle)
+	filterResult := evaluateHardFilters(preferences, constraints, nutritionProfile, matchedRules, facts)
+	scoreResult := computeDeterministicScore(preferences, nutritionProfile, signals, facts, len(filterResult.rejectedReasons) == 0)
 
 	return &models.RecommendationCandidate{
 		RunID:            runID,
 		UserID:           userID,
 		ProfileID:        profileID,
-		ExternalRecipeID: fmt.Sprintf("%d", recipe.ID),
-		Title:            recipe.Title,
+		ExternalRecipeID: fmt.Sprintf("%d", recipe.recipe.ID),
+		Title:            recipe.recipe.Title,
 		Source:           "hybrid_orchestrator",
-		Stage:            "deterministic_firewall",
-		Accepted:         len(rejectedReasons) == 0,
-		FinalScore:       score,
-		Calories:         calories,
-		Protein:          protein,
-		Carbs:            carbs,
-		Fat:              fat,
-		Sugar:            sugar,
-		SodiumMg:         sodium,
-		Ingredients:      models.StringSlice(ingredients),
-		Tags:             models.StringSlice(append(heuristicTags, lifestyle.Goal, lifestyle.ActivityLevel)),
-		AcceptedReasons:  models.StringSlice(acceptedReasons),
-		RejectedReasons:  models.StringSlice(rejectedReasons),
-		ScoreBreakdown:   models.JSONMap(scoreBreakdown),
-		FilterDecisions:  models.JSONMap(filterDecisions),
-		SourceProvenance: models.JSONMap{"provider": "spoonacular", "recipeId": recipe.ID},
-		Explanation:      buildExplanation(acceptedReasons, rejectedReasons),
-		Description:      description,
+		Stage:            candidateStage(len(filterResult.rejectedReasons) == 0),
+		Accepted:         len(filterResult.rejectedReasons) == 0,
+		FinalScore:       scoreResult.score,
+		Calories:         facts.calories,
+		Protein:          facts.protein,
+		Carbs:            facts.carbs,
+		Fat:              facts.fat,
+		Sugar:            facts.sugar,
+		SodiumMg:         facts.sodium,
+		Ingredients:      models.StringSlice(facts.ingredients),
+		Tags:             models.StringSlice(facts.finalTags),
+		AcceptedReasons:  models.StringSlice(scoreResult.acceptedReasons),
+		RejectedReasons:  models.StringSlice(filterResult.rejectedReasons),
+		ScoreBreakdown:   models.JSONMap(scoreResult.scoreBreakdown),
+		FilterDecisions:  models.JSONMap(filterResult.filterDecisions),
+		SourceProvenance: models.JSONMap{
+			"provider":      "spoonacular",
+			"recipeId":      recipe.recipe.ID,
+			"searchPlans":   recipe.sourcePlans,
+			"cacheSources":  recipe.cacheSources,
+			"pipeline":      []string{"recipe_enrichment", "hard_filter", "deterministic_score", "ai_rerank_optional"},
+			"enrichedFacts": []string{"nutrition", "ingredients", "summary"},
+		},
+		Explanation: buildExplanation(scoreResult.acceptedReasons, filterResult.rejectedReasons),
+		Description: facts.description,
 	}
 }
 
 func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *models.Lifestyle, preferences *models.Preferences, candidates []*models.RecommendationCandidate) {
-	payload := make([]map[string]any, 0, len(candidates))
+	payload := aiRerankPromptPayload{
+		Goal:                 lifestyle.Goal,
+		ActivityLevel:        lifestyle.ActivityLevel,
+		PreferredMeals:       sanitizePromptList([]string(preferences.MealStyles), 8),
+		PreferredIngredients: sanitizePromptList([]string(preferences.Likes), 8),
+		Candidates:           make([]aiRerankPromptCandidate, 0, len(candidates)),
+	}
+	allowedIDs := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
-		payload = append(payload, map[string]any{
-			"id":          candidate.ExternalRecipeID,
-			"title":       candidate.Title,
-			"calories":    candidate.Calories,
-			"protein":     candidate.Protein,
-			"carbs":       candidate.Carbs,
-			"fat":         candidate.Fat,
-			"ingredients": candidate.Ingredients,
-			"tags":        candidate.Tags,
+		allowedIDs[candidate.ExternalRecipeID] = struct{}{}
+		payload.Candidates = append(payload.Candidates, aiRerankPromptCandidate{
+			ID:       candidate.ExternalRecipeID,
+			Title:    candidate.Title,
+			Calories: candidate.Calories,
+			Protein:  candidate.Protein,
+			Carbs:    candidate.Carbs,
+			Fat:      candidate.Fat,
+			Tags:     sanitizePromptList([]string(candidate.Tags), 10),
 		})
 	}
 
-	buf, _ := json.Marshal(map[string]any{
-		"goal":        lifestyle.Goal,
-		"activity":    lifestyle.ActivityLevel,
-		"preferences": preferences,
-		"candidates":  payload,
-	})
+	buf, _ := json.Marshal(payload)
 
-	text, err := s.AI.GenerateText(ctx, "Re-rank ONLY these already-approved meals. Return ONLY JSON array with fields id, confidenceBonus (-5 to 5), explanation. Do not invent meals. Input: "+string(buf))
+	text, err := s.AI.GenerateText(ctx, "You are a non-authoritative meal reranker. All safety and health rules have already been enforced deterministically. Return ONLY a JSON array with fields id, confidenceBonus (-5 to 5), explanation. Never invent meals, never change ids, never mention health constraints not present in the payload. Input: "+string(buf))
 	if err != nil {
 		return
 	}
@@ -491,6 +536,9 @@ func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *mo
 
 	byID := make(map[string]aiRerank, len(reranks))
 	for _, rerank := range reranks {
+		if _, ok := allowedIDs[rerank.ID]; !ok {
+			continue
+		}
 		byID[rerank.ID] = rerank
 	}
 
@@ -508,9 +556,13 @@ func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *mo
 		}
 		candidate.FinalScore += bonus
 		candidate.SourceProvenance["aiConfidenceBonus"] = bonus
-		if strings.TrimSpace(rerank.Explanation) != "" {
-			candidate.Explanation = rerank.Explanation
+		sanitizedExplanation := sanitizeAIExplanation(rerank.Explanation)
+		candidate.SourceProvenance["aiRerank"] = map[string]any{
+			"validated":   true,
+			"bonus":       bonus,
+			"explanation": sanitizedExplanation,
 		}
+		candidate.Explanation = mergeExplanation(candidate.Explanation, sanitizedExplanation)
 	}
 }
 
@@ -519,6 +571,185 @@ func statusFromCandidates(accepted int) string {
 		return "no_matches"
 	}
 	return "completed"
+}
+
+func buildCandidateFacts(recipe spoonacular.Recipe, lifestyle *models.Lifestyle) candidateFacts {
+	ingredients := extractIngredients(recipe.ExtendedIngredients)
+	calories, protein, carbs, fat, sugar, sodium := extractNutrients(recipe.Nutrition.Nutrients)
+	description := stripHTML(recipe.Summary)
+	baseTags := inferTags(recipe.Title, description, ingredients, calories, protein, sugar, sodium)
+	finalTags := append([]string{}, baseTags...)
+	if lifestyle != nil {
+		finalTags = append(finalTags, lifestyle.Goal, lifestyle.ActivityLevel)
+	}
+
+	return candidateFacts{
+		ingredients: ingredients,
+		description: description,
+		baseTags:    baseTags,
+		finalTags:   mergeLists(finalTags),
+		calories:    calories,
+		protein:     protein,
+		carbs:       carbs,
+		fat:         fat,
+		sugar:       sugar,
+		sodium:      sodium,
+	}
+}
+
+func evaluateHardFilters(preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule, facts candidateFacts) hardFilterResult {
+	rejectedReasons := make([]string, 0)
+	allergies := []string{}
+	excludedIngredients := []string{}
+	derivedExcluded := []string{}
+	mealStyles := []string{}
+	if constraints != nil {
+		allergies = []string(constraints.Allergies)
+		excludedIngredients = []string(constraints.ExcludedIngredients)
+	}
+	if nutritionProfile != nil {
+		derivedExcluded = []string(nutritionProfile.DerivedExcluded)
+	}
+	if preferences != nil {
+		mealStyles = []string(preferences.MealStyles)
+	}
+	filterDecisions := map[string]any{
+		"matchedRuleCodes": extractRuleCodes(matchedRules),
+		"requiredRuleTags": extractRequiredTags(matchedRules),
+		"thresholds": map[string]any{
+			"maxMealCalories":    nutritionProfile.MaxMealCalories,
+			"minProteinPerMeal":  nutritionProfile.MinProteinPerMeal,
+			"maxCarbsPerMeal":    nutritionProfile.MaxCarbsPerMeal,
+			"maxFatPerMeal":      nutritionProfile.MaxFatPerMeal,
+			"maxSugarPerMeal":    nutritionProfile.MaxSugarPerMeal,
+			"maxSodiumMgPerMeal": nutritionProfile.MaxSodiumMgPerMeal,
+		},
+	}
+
+	blockedIngredients := mergeLists(allergies, excludedIngredients, derivedExcluded)
+	if overlapCount(facts.ingredients, blockedIngredients) > 0 {
+		rejectedReasons = append(rejectedReasons, "contains blocked ingredients")
+		filterDecisions["blockedIngredients"] = blockedIngredients
+	}
+
+	for _, rule := range matchedRules {
+		if overlapCount(facts.ingredients, []string(rule.BlockedIngredients)) > 0 {
+			rejectedReasons = append(rejectedReasons, "violates medical rule "+rule.Code)
+		}
+		if overlapCount(facts.baseTags, []string(rule.BlockedTags)) > 0 {
+			rejectedReasons = append(rejectedReasons, "matches blocked medical tag "+rule.Code)
+		}
+		if len(rule.RequiredTags) > 0 && overlapCount(facts.baseTags, []string(rule.RequiredTags)) == 0 {
+			rejectedReasons = append(rejectedReasons, "missing required medical tag "+rule.Code)
+		}
+		if rule.MaxCalories > 0 && facts.calories > rule.MaxCalories {
+			rejectedReasons = append(rejectedReasons, "exceeds medical calorie limit "+rule.Code)
+		}
+		if rule.MaxProteinGrams > 0 && facts.protein > rule.MaxProteinGrams {
+			rejectedReasons = append(rejectedReasons, "exceeds medical protein limit "+rule.Code)
+		}
+		if rule.MaxCarbsGrams > 0 && facts.carbs > rule.MaxCarbsGrams {
+			rejectedReasons = append(rejectedReasons, "exceeds medical carbohydrate limit "+rule.Code)
+		}
+		if rule.MaxFatGrams > 0 && facts.fat > rule.MaxFatGrams {
+			rejectedReasons = append(rejectedReasons, "exceeds medical fat limit "+rule.Code)
+		}
+		if rule.MaxSugarGrams > 0 && facts.sugar > rule.MaxSugarGrams {
+			rejectedReasons = append(rejectedReasons, "exceeds medical sugar limit "+rule.Code)
+		}
+		if rule.MaxSodiumMg > 0 && facts.sodium > rule.MaxSodiumMg {
+			rejectedReasons = append(rejectedReasons, "exceeds medical sodium limit "+rule.Code)
+		}
+		if rule.MinProteinGrams > 0 && facts.protein < rule.MinProteinGrams {
+			rejectedReasons = append(rejectedReasons, "below medical protein floor "+rule.Code)
+		}
+	}
+
+	if facts.calories > nutritionProfile.MaxMealCalories {
+		rejectedReasons = append(rejectedReasons, "exceeds calorie ceiling")
+	}
+	if facts.protein < nutritionProfile.MinProteinPerMeal {
+		rejectedReasons = append(rejectedReasons, "insufficient protein")
+	}
+	if facts.carbs > nutritionProfile.MaxCarbsPerMeal {
+		rejectedReasons = append(rejectedReasons, "exceeds carbohydrate ceiling")
+	}
+	if facts.fat > nutritionProfile.MaxFatPerMeal {
+		rejectedReasons = append(rejectedReasons, "exceeds fat ceiling")
+	}
+	if facts.sugar > nutritionProfile.MaxSugarPerMeal {
+		rejectedReasons = append(rejectedReasons, "exceeds sugar ceiling")
+	}
+	if facts.sodium > nutritionProfile.MaxSodiumMgPerMeal {
+		rejectedReasons = append(rejectedReasons, "exceeds sodium ceiling")
+	}
+
+	filterDecisions["declaredMealStyles"] = mealStyles
+
+	return hardFilterResult{
+		rejectedReasons: rejectedReasons,
+		filterDecisions: filterDecisions,
+	}
+}
+
+func computeDeterministicScore(preferences *models.Preferences, nutritionProfile *models.NutritionProfile, signals *SimilaritySignals, facts candidateFacts, hardFiltersPassed bool) deterministicScoreResult {
+	acceptedReasons := make([]string, 0)
+	score := 0.0
+	baseScore := 40.0
+	likes := []string{}
+	similarityLikes := []string{}
+	recommendedMealStyles := []string{}
+	if preferences != nil {
+		likes = []string(preferences.Likes)
+	}
+	if signals != nil {
+		similarityLikes = signals.Likes
+	}
+	if nutritionProfile != nil {
+		recommendedMealStyles = []string(nutritionProfile.RecommendedMealStyles)
+	}
+	nutrientBonus := nutrientAlignmentBonus(facts.calories, facts.protein, facts.carbs, facts.fat, nutritionProfile)
+	preferenceOverlap := overlapCount(facts.ingredients, likes)
+	similarityOverlap := overlapCount(facts.ingredients, similarityLikes)
+	styleOverlap := overlapCount(facts.baseTags, recommendedMealStyles)
+
+	if hardFiltersPassed {
+		score = baseScore
+		if preferenceOverlap > 0 {
+			score += 12
+			acceptedReasons = append(acceptedReasons, "ingredients align with stated likes")
+		}
+		if similarityOverlap > 0 {
+			score += 6
+			acceptedReasons = append(acceptedReasons, "boosted by similar user preferences")
+		}
+		if styleOverlap > 0 {
+			score += 8
+			acceptedReasons = append(acceptedReasons, "matches recommended meal styles")
+		}
+		score += nutrientBonus
+		acceptedReasons = append(acceptedReasons, "passes deterministic nutrition firewall")
+	}
+
+	return deterministicScoreResult{
+		score:           score,
+		acceptedReasons: acceptedReasons,
+		scoreBreakdown: map[string]any{
+			"base":                baseScore,
+			"finalBeforeAI":       score,
+			"nutrientAlignment":   nutrientBonus,
+			"preferenceOverlap":   preferenceOverlap,
+			"similarityOverlap":   similarityOverlap,
+			"recommendedStyleHit": styleOverlap,
+		},
+	}
+}
+
+func candidateStage(accepted bool) string {
+	if !accepted {
+		return "hard_filter_rejected"
+	}
+	return "deterministic_scored"
 }
 
 func buildQuery(styles, likes []string) string {
@@ -541,17 +772,7 @@ func normalizeList(items []string) []string {
 }
 
 func normalizeIntolerances(items []string) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		clean := normalizeKeyword(item)
-		if clean == "shrimp" || clean == "shrimps" {
-			clean = "shellfish"
-		}
-		if clean != "" {
-			out = append(out, clean)
-		}
-	}
-	return out
+	return taxonomy.SpoonacularIntoleranceList(items)
 }
 
 func normalizeKeyword(input string) string {
@@ -634,7 +855,7 @@ func singularize(input string) string {
 	return trimmed
 }
 
-func inferTags(title, description string, ingredients []string) []string {
+func inferTags(title, description string, ingredients []string, calories, protein, sugar, sodium float64) []string {
 	text := strings.ToLower(title + " " + description + " " + strings.Join(ingredients, " "))
 	tags := []string{}
 	addTag := func(tag string, patterns ...string) {
@@ -650,6 +871,18 @@ func inferTags(title, description string, ingredients []string) []string {
 	addTag("salty", "bacon", "sausage", "salted")
 	addTag("healthy", "salad", "quinoa", "grilled")
 	addTag("high-protein", "chicken", "beef", "tofu", "egg")
+	if protein >= 20 {
+		tags = append(tags, "high-protein")
+	}
+	if sugar > 0 && sugar <= 18 {
+		tags = append(tags, "low-sugar")
+	}
+	if sodium > 0 && sodium <= 700 {
+		tags = append(tags, "low-sodium")
+	}
+	if calories > 0 && calories <= 750 {
+		tags = append(tags, "balanced")
+	}
 	return mergeLists(tags)
 }
 
@@ -696,6 +929,14 @@ func extractRuleCodes(rules []models.MedicalRule) []string {
 	return out
 }
 
+func extractRequiredTags(rules []models.MedicalRule) []string {
+	out := make([]string, 0)
+	for _, rule := range rules {
+		out = append(out, []string(rule.RequiredTags)...)
+	}
+	return mergeLists(out)
+}
+
 func buildExplanation(acceptedReasons, rejectedReasons []string) string {
 	if len(rejectedReasons) > 0 {
 		return "Rejected because " + strings.Join(rejectedReasons, ", ")
@@ -704,6 +945,115 @@ func buildExplanation(acceptedReasons, rejectedReasons []string) string {
 		return "Selected because " + strings.Join(acceptedReasons, ", ")
 	}
 	return "Selected after deterministic profile validation"
+}
+
+func buildExternalSearchTrace(opts spoonacular.SearchOptions, resp *spoonacular.SearchResponse, searchErr error, latency time.Duration) map[string]any {
+	trace := map[string]any{
+		"provider":            "spoonacular",
+		"requestSignature":    security.SecureCacheKey(mustJSON(opts)),
+		"queryPresent":        strings.TrimSpace(opts.Query) != "",
+		"cuisineCount":        len(opts.Cuisine),
+		"excludeCuisineCount": len(opts.ExcludeCuisine),
+		"type":                opts.Type,
+		"maxReadyTime":        opts.MaxReadyTime,
+		"includeCount":        len(opts.IncludeIngredients),
+		"excludeCount":        len(opts.ExcludeIngredients),
+		"intoleranceCount":    len(opts.Intolerances),
+		"latencyMs":           latency.Milliseconds(),
+		"resultCount":         0,
+		"cacheHit":            false,
+		"errorClass":          "",
+		"bounds": map[string]any{
+			"maxCalories": opts.MaxCalories,
+			"minProtein":  opts.MinProtein,
+			"maxProtein":  opts.MaxProtein,
+			"maxCarbs":    opts.MaxCarbs,
+			"maxFat":      opts.MaxFat,
+			"maxSugar":    opts.MaxSugar,
+			"maxSodium":   opts.MaxSodium,
+		},
+	}
+	if resp != nil {
+		trace["resultCount"] = len(resp.Results)
+		trace["cacheHit"] = resp.CacheHit
+	}
+	if searchErr != nil {
+		trace["errorClass"] = classifySearchError(searchErr)
+	}
+	return trace
+}
+
+func sanitizePromptList(items []string, limit int) []string {
+	cleaned := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		value := normalizeKeyword(item)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		cleaned = append(cleaned, value)
+		if limit > 0 && len(cleaned) >= limit {
+			break
+		}
+	}
+	return cleaned
+}
+
+func sanitizeAIExplanation(input string) string {
+	cleaned := strings.Join(strings.Fields(strings.TrimSpace(input)), " ")
+	if cleaned == "" {
+		return ""
+	}
+	if len(cleaned) > 220 {
+		cleaned = cleaned[:220]
+		cleaned = strings.TrimSpace(cleaned)
+	}
+	return cleaned
+}
+
+func mergeExplanation(base, ai string) string {
+	base = strings.TrimSpace(base)
+	ai = strings.TrimSpace(ai)
+	if ai == "" {
+		return base
+	}
+	if base == "" {
+		return "AI rerank note: " + ai
+	}
+	return base + " AI rerank note: " + ai
+}
+
+func classifySearchError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var upstreamErr *spoonacular.UpstreamError
+	if errors.As(err, &upstreamErr) {
+		switch {
+		case upstreamErr.StatusCode == 429:
+			return "upstream_rate_limited"
+		case upstreamErr.StatusCode >= 500:
+			return "upstream_server_error"
+		case upstreamErr.StatusCode >= 400:
+			return "upstream_client_error"
+		}
+	}
+	if errors.Is(err, spoonacular.ErrUpstreamFailure) {
+		return "upstream_unavailable"
+	}
+	return "internal_error"
+}
+
+func mustJSON(value any) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func shouldApplyAIRerank(constraints *models.Constraints, matchedRules []models.MedicalRule) bool {

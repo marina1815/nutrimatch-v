@@ -1,26 +1,55 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { PersonalInfoStep } from "@/components/forms/PersonalInfoStep";
-import { LifestyleStep } from "@/components/forms/LifeStyleStep";
-import { PreferencesStep } from "@/components/forms/PreferencesStep";
 import { ConstraintsStep } from "@/components/forms/ConstraintsStep";
+import { LifestyleStep } from "@/components/forms/LifeStyleStep";
+import { PersonalInfoStep } from "@/components/forms/PersonalInfoStep";
+import { PreferencesStep } from "@/components/forms/PreferencesStep";
+import { ApiError, submitProfile } from "@/lib/api";
+import { sanitizeProfile } from "@/lib/profile-normalization";
+import { setCurrentProfileId } from "@/lib/session";
+import { getSafeErrorMessage } from "@/lib/ui-errors";
 import { useProfileForm } from "@/hooks/useProfileForm";
 
-const steps = ["Infos personnelles", "Mode de vie", "Préférences", "Santé & contraintes"];
+const steps = ["Infos personnelles", "Mode de vie", "Preferences", "Sante & contraintes"];
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { step, data, setData, errors, next, back } = useProfileForm();
+  const { step, data, setData, errors, next, back, reset } = useProfileForm();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const handleNext = () => {
-    if (step < 3) {
-      next();
+  const handleNext = async () => {
+    const isValid = next();
+    if (!isValid) {
       return;
     }
-    router.push("/results");
+
+    if (step < 3) {
+      return;
+    }
+
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    try {
+      const response = await submitProfile(sanitizeProfile(data));
+      setCurrentProfileId(response.profileId);
+      reset();
+      router.push("/results");
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        setSubmitError("Session expiree. Connecte-toi de nouveau pour enregistrer ton profil.");
+        router.push("/login");
+      } else {
+        setSubmitError(getSafeErrorMessage(error, "profile.submit"));
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -30,7 +59,7 @@ export default function OnboardingPage() {
           <span className="nm-logo">NutriMatch</span>
           <h1 className="nm-title">Construis ton profil nutritionnel</h1>
           <p className="nm-sub">
-            Étape {step + 1} sur 4 — {steps[step]}
+            Etape {step + 1} sur 4 - {steps[step]}
           </p>
         </div>
 
@@ -63,13 +92,19 @@ export default function OnboardingPage() {
           )}
         </div>
 
+        {submitError && <p className="nm-error">{submitError}</p>}
+
         <div className="nm-actions">
-          <Button variant="secondary" onClick={back} disabled={step === 0}>
+          <Button variant="secondary" onClick={back} disabled={step === 0 || isSubmitting}>
             Retour
           </Button>
 
-          <Button onClick={handleNext}>
-            {step === 3 ? "Voir les recommandations" : "Continuer"}
+          <Button onClick={() => void handleNext()} disabled={isSubmitting}>
+            {isSubmitting
+              ? "Enregistrement..."
+              : step === 3
+                ? "Voir les recommandations"
+                : "Continuer"}
           </Button>
         </div>
       </Card>

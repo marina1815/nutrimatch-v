@@ -12,7 +12,7 @@ import (
 	"github.com/marina1815/nutrimatch/internal/security"
 )
 
-func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *security.CSRFManager, sessions repository.SessionRepository, auth *handlers.AuthHandler, profiles *handlers.ProfileHandler, recs *handlers.RecommendationHandler, health *handlers.HealthHandler) *gin.Engine {
+func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *security.CSRFManager, sessions repository.SessionRepository, rateBuckets repository.RateLimitBucketRepository, auth *handlers.AuthHandler, profiles *handlers.ProfileHandler, recs *handlers.RecommendationHandler, health *handlers.HealthHandler) *gin.Engine {
 	switch strings.ToLower(cfg.AppEnv) {
 	case "production":
 		gin.SetMode(gin.ReleaseMode)
@@ -35,7 +35,7 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *securi
 	r.Use(middleware.RequestID())
 	r.Use(middleware.BodyLimit(cfg.BodyLimitBytes))
 	r.Use(middleware.SecurityHeaders())
-	r.Use(middleware.RateLimit())
+	r.Use(middleware.RateLimit(rateBuckets))
 
 	cleaned := make([]string, 0, len(cfg.TrustedOrigins))
 	for _, origin := range cfg.TrustedOrigins {
@@ -69,10 +69,11 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *securi
 		v1.POST("/auth/logout", authOriginGuard, csrfGuard, auth.Logout)
 
 		protected := v1.Group("")
-		protected.Use(middleware.AuthRequired(tokens, sessions))
+		protected.Use(middleware.AuthRequired(tokens, sessions, cfg.SessionIdleTTL))
 		protected.POST("/profile", profiles.Upsert)
 		protected.GET("/profile", profiles.Get)
 		protected.GET("/profile/nutrition", profiles.GetNutrition)
+		protected.GET("/profile/ingredients/suggest", profiles.SuggestIngredients)
 		protected.GET("/recommendations/:profileId", recs.Get)
 		protected.GET("/recommendations/:profileId/trace", recs.Trace)
 		protected.GET("/recommendations/:profileId/explanation", recs.Explain)

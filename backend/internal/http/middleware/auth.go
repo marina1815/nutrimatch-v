@@ -10,7 +10,7 @@ import (
 	"github.com/marina1815/nutrimatch/internal/security"
 )
 
-func AuthRequired(tokens *security.TokenManager, sessions repository.SessionRepository) gin.HandlerFunc {
+func AuthRequired(tokens *security.TokenManager, sessions repository.SessionRepository, idleTTL time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw := c.GetHeader("Authorization")
 		if !strings.HasPrefix(raw, "Bearer ") {
@@ -25,13 +25,22 @@ func AuthRequired(tokens *security.TokenManager, sessions repository.SessionRepo
 		}
 
 		session, err := sessions.GetByID(c.Request.Context(), claims.SessionID)
-		if err != nil || session.RevokedAt != nil || session.ExpiresAt.Before(time.Now()) {
+		now := time.Now()
+		if err != nil || session.RevokedAt != nil || session.ExpiresAt.Before(now) || session.IdleExpiresAt.Before(now) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "session revoked"})
 			return
 		}
 		if session.UserID != claims.Subject {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "session subject mismatch"})
 			return
+		}
+
+		if idleTTL > 0 {
+			idleExp := now.Add(idleTTL)
+			if idleExp.After(session.ExpiresAt) {
+				idleExp = session.ExpiresAt
+			}
+			_ = sessions.Touch(c.Request.Context(), session.ID, idleExp)
 		}
 
 		c.Set("user_id", claims.Subject)

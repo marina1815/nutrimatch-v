@@ -1,11 +1,10 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useState } from "react";
+import { clearDraftProfile, getDraftProfile, setDraftProfile } from "@/lib/session";
+import { sanitizeProfile } from "@/lib/profile-normalization";
 import { UserProfile } from "@/lib/types";
-import { validateStep } from "@/lib/validation";
-
-const STORAGE_KEY = "nutrimatch-profile";
+import { ProfileErrors, validateStep } from "@/lib/validation";
 
 const defaultProfile: UserProfile = {
   personal: {
@@ -21,11 +20,15 @@ const defaultProfile: UserProfile = {
     activityLevel: "",
     lifestyleType: "",
     goal: "",
+    maxReadyTime: 45,
   },
   preferences: {
     likes: [],
     dislikes: [],
     mealStyles: [],
+    mealTypes: [],
+    preferredCuisines: [],
+    excludedCuisines: [],
     mealsPerDay: "",
   },
   constraints: {
@@ -55,6 +58,9 @@ function mergeWithDefaultProfile(saved: Partial<UserProfile>): UserProfile {
       likes: saved.preferences?.likes ?? [],
       dislikes: saved.preferences?.dislikes ?? [],
       mealStyles: saved.preferences?.mealStyles ?? [],
+      mealTypes: saved.preferences?.mealTypes ?? [],
+      preferredCuisines: saved.preferences?.preferredCuisines ?? [],
+      excludedCuisines: saved.preferences?.excludedCuisines ?? [],
       mealsPerDay: saved.preferences?.mealsPerDay ?? "",
     },
     constraints: {
@@ -73,29 +79,20 @@ function mergeWithDefaultProfile(saved: Partial<UserProfile>): UserProfile {
 
 export function useProfileForm() {
   const [step, setStep] = useState(0);
-  const [data, setData] = useState<UserProfile>(defaultProfile);
-  const [errors, setErrors] = useState<Record<string, any>>({});
+  const [data, setData] = useState<UserProfile>(() => {
+    const saved = getDraftProfile();
+    return saved ? mergeWithDefaultProfile(saved) : defaultProfile;
+  });
+  const [errors, setErrors] = useState<ProfileErrors>({});
 
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved) as Partial<UserProfile>;
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setData(mergeWithDefaultProfile(parsed));
-      } catch {
-        setData(defaultProfile);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    setDraftProfile(data);
   }, [data]);
 
   const next = () => {
-    const stepErrors = validateStep(step, data);
+    const sanitized = sanitizeProfile(data);
+    setData(sanitized);
+    const stepErrors = validateStep(step, sanitized);
 
     if (Object.keys(stepErrors).length > 0) {
       setErrors(stepErrors);
@@ -113,7 +110,7 @@ export function useProfileForm() {
     setData(defaultProfile);
     setErrors({});
     setStep(0);
-    localStorage.removeItem(STORAGE_KEY);
+    clearDraftProfile();
   };
 
   return {

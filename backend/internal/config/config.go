@@ -24,6 +24,9 @@ type Config struct {
 	JWTAudience        string
 	AccessTokenTTL     time.Duration
 	RefreshTokenTTL    time.Duration
+	SessionIdleTTL     time.Duration
+	AuthFailureWindow  time.Duration
+	AuthMaxFailures    int
 	RefreshTokenPepper string
 	HealthDataKey      string
 
@@ -54,11 +57,14 @@ type Config struct {
 	AIAPIBaseURL        string
 	AIAPIKey            string
 
-	SpoonacularBaseURL string
-	SpoonacularAPIKey  string
-	GoogleAIBaseURL    string
-	GoogleAIAPIKey     string
-	GoogleAIModel      string
+	SpoonacularBaseURL         string
+	SpoonacularAPIKey          string
+	SpoonacularSearchCacheTTL  time.Duration
+	SpoonacularCircuitFailures int
+	SpoonacularCircuitCooldown time.Duration
+	GoogleAIBaseURL            string
+	GoogleAIAPIKey             string
+	GoogleAIModel              string
 
 	OIDCIssuerURL          string
 	OIDCClientID           string
@@ -83,6 +89,9 @@ func Load() *Config {
 		JWTAudience:        getEnv("JWT_AUDIENCE", "nutrimatch_users"),
 		AccessTokenTTL:     time.Duration(getEnvInt("ACCESS_TOKEN_TTL_MINUTES", 15)) * time.Minute,
 		RefreshTokenTTL:    time.Duration(getEnvInt("REFRESH_TOKEN_TTL_HOURS", 720)) * time.Hour,
+		SessionIdleTTL:     time.Duration(getEnvInt("SESSION_IDLE_TTL_HOURS", 24)) * time.Hour,
+		AuthFailureWindow:  time.Duration(getEnvInt("AUTH_FAILURE_WINDOW_MINUTES", 15)) * time.Minute,
+		AuthMaxFailures:    getEnvInt("AUTH_MAX_FAILURES", 5),
 		RefreshTokenPepper: getEnv("REFRESH_TOKEN_PEPPER", getEnv("JWT_SECRET", "")),
 		HealthDataKey:      getEnv("HEALTH_DATA_ENCRYPTION_KEY", ""),
 
@@ -113,11 +122,14 @@ func Load() *Config {
 		AIAPIBaseURL:        getEnv("AI_API_BASE_URL", ""),
 		AIAPIKey:            getEnv("AI_API_KEY", ""),
 
-		SpoonacularBaseURL: getEnv("SPOONACULAR_BASE_URL", "https://api.spoonacular.com"),
-		SpoonacularAPIKey:  getEnv("SPOONACULAR_API_KEY", ""),
-		GoogleAIBaseURL:    getEnv("GOOGLE_AI_BASE_URL", "https://generativelanguage.googleapis.com"),
-		GoogleAIAPIKey:     getEnv("GOOGLE_AI_API_KEY", ""),
-		GoogleAIModel:      getEnv("GOOGLE_AI_MODEL", "gemini-2.5-flash"),
+		SpoonacularBaseURL:         getEnv("SPOONACULAR_BASE_URL", "https://api.spoonacular.com"),
+		SpoonacularAPIKey:          getEnv("SPOONACULAR_API_KEY", ""),
+		SpoonacularSearchCacheTTL:  time.Duration(getEnvInt("SPOONACULAR_SEARCH_CACHE_TTL_MINUTES", 15)) * time.Minute,
+		SpoonacularCircuitFailures: getEnvInt("SPOONACULAR_CIRCUIT_FAILURES", 3),
+		SpoonacularCircuitCooldown: time.Duration(getEnvInt("SPOONACULAR_CIRCUIT_COOLDOWN_SECONDS", 120)) * time.Second,
+		GoogleAIBaseURL:            getEnv("GOOGLE_AI_BASE_URL", "https://generativelanguage.googleapis.com"),
+		GoogleAIAPIKey:             getEnv("GOOGLE_AI_API_KEY", ""),
+		GoogleAIModel:              getEnv("GOOGLE_AI_MODEL", "gemini-2.5-flash"),
 
 		OIDCIssuerURL:          getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:           getEnv("OIDC_CLIENT_ID", ""),
@@ -167,6 +179,15 @@ func (c *Config) Validate() error {
 	}
 	if c.RefreshTokenTTL < 24*time.Hour || c.RefreshTokenTTL > 30*24*time.Hour {
 		problems = append(problems, "REFRESH_TOKEN_TTL_HOURS must be between 24 and 720")
+	}
+	if c.SessionIdleTTL < time.Hour || c.SessionIdleTTL > c.RefreshTokenTTL {
+		problems = append(problems, "SESSION_IDLE_TTL_HOURS must be between 1 hour and REFRESH_TOKEN_TTL_HOURS")
+	}
+	if c.AuthFailureWindow < time.Minute || c.AuthFailureWindow > 24*time.Hour {
+		problems = append(problems, "AUTH_FAILURE_WINDOW_MINUTES must be between 1 and 1440")
+	}
+	if c.AuthMaxFailures < 3 || c.AuthMaxFailures > 20 {
+		problems = append(problems, "AUTH_MAX_FAILURES must be between 3 and 20")
 	}
 	if c.Argon2Time < 2 {
 		problems = append(problems, "ARGON2_TIME must be at least 2")
@@ -228,6 +249,15 @@ func (c *Config) Validate() error {
 	}
 	if err := validateExternalURL("SPOONACULAR_BASE_URL", c.SpoonacularBaseURL); err != nil {
 		problems = append(problems, err.Error())
+	}
+	if c.SpoonacularSearchCacheTTL < time.Minute || c.SpoonacularSearchCacheTTL > 24*time.Hour {
+		problems = append(problems, "SPOONACULAR_SEARCH_CACHE_TTL_MINUTES must be between 1 and 1440")
+	}
+	if c.SpoonacularCircuitFailures < 0 || c.SpoonacularCircuitFailures > 20 {
+		problems = append(problems, "SPOONACULAR_CIRCUIT_FAILURES must be between 0 and 20")
+	}
+	if c.SpoonacularCircuitFailures > 0 && (c.SpoonacularCircuitCooldown < 10*time.Second || c.SpoonacularCircuitCooldown > time.Hour) {
+		problems = append(problems, "SPOONACULAR_CIRCUIT_COOLDOWN_SECONDS must be between 10 and 3600 when the circuit breaker is enabled")
 	}
 	if c.GoogleAIAPIKey != "" || c.GoogleAIBaseURL != "" {
 		if err := validateExternalURL("GOOGLE_AI_BASE_URL", c.GoogleAIBaseURL); err != nil {

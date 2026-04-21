@@ -33,5 +33,5 @@ type RecommendationCandidate struct {
 }
 
 func (RecommendationCandidate) TableName() string {
-	return "health.recommendation_candidates"
+	return "recommendation.candidates"
 }

@@ -25,5 +25,5 @@ type MedicalRule struct {
 }
 
 func (MedicalRule) TableName() string {
-	return "health.medical_rules"
+	return "catalog.medical_rules"
 }

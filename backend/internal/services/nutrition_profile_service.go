@@ -9,6 +9,7 @@ import (
 
 	"github.com/marina1815/nutrimatch/internal/models"
 	"github.com/marina1815/nutrimatch/internal/repository"
+	"github.com/marina1815/nutrimatch/internal/taxonomy"
 )
 
 type NutritionProfileService struct {
@@ -189,8 +190,11 @@ func mergeStringSlices(lists ...[]string) []string {
 }
 
 func MatchMedicalRules(rules []models.MedicalRule, constraints *models.Constraints) []models.MedicalRule {
-	conditions := mergeStringSlices(constraints.Conditions, constraints.ChronicDiseases)
-	medications := strings.ToLower(strings.TrimSpace(constraints.Medications))
+	conditions := mergeStringSlices(
+		taxonomy.CanonicalizeConditionList([]string(constraints.Conditions)),
+		taxonomy.CanonicalizeConditionList([]string(constraints.ChronicDiseases)),
+	)
+	medications := taxonomy.NormalizeLooseToken(constraints.Medications)
 	out := make([]models.MedicalRule, 0)
 	for _, rule := range rules {
 		if rule.ConditionKey != "" {

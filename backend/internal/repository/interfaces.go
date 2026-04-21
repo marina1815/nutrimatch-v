@@ -18,7 +18,8 @@ type SessionRepository interface {
 	Create(ctx context.Context, session *models.Session) error
 	GetByID(ctx context.Context, sessionID string) (*models.Session, error)
 	GetByRefreshHash(ctx context.Context, refreshHash string) (*models.Session, error)
-	Rotate(ctx context.Context, sessionID, newRefreshHash string, expiresAt time.Time) error
+	Rotate(ctx context.Context, sessionID, newRefreshHash string, expiresAt, idleExpiresAt time.Time) error
+	Touch(ctx context.Context, sessionID string, idleExpiresAt time.Time) error
 	Revoke(ctx context.Context, sessionID string) error
 }
 
@@ -48,6 +49,15 @@ type AuditRepository interface {
 	Create(ctx context.Context, event *models.AuditEvent) error
 }
 
+type AuthFailureRepository interface {
+	Create(ctx context.Context, failure *models.AuthFailure) error
+	CountRecent(ctx context.Context, emailHash, ipHash string, since time.Time) (int64, error)
+}
+
+type RateLimitBucketRepository interface {
+	TakeToken(ctx context.Context, key, bucketType string, refillPerSecond float64, burst int, now time.Time) (bool, error)
+}
+
 type ExternalIdentityRepository interface {
 	GetByProviderSubject(ctx context.Context, provider, issuer, subject string) (*models.ExternalIdentity, error)
 	Create(ctx context.Context, identity *models.ExternalIdentity) error
@@ -59,7 +69,10 @@ type ProfileBundle struct {
 	Age               int
 	ActivityLevel     string
 	Goal              string
+	MaxReadyTime      int
 	MealStyles        []string
+	MealTypes         []string
+	PreferredCuisines []string
 	Likes             []string
 	Conditions        []string
 	ChronicDiseases   []string
@@ -73,6 +86,8 @@ type Repositories struct {
 	MedicalRules       MedicalRuleRepository
 	RecommendationRuns RecommendationTraceRepository
 	Audit              AuditRepository
+	AuthFailures       AuthFailureRepository
+	RateLimitBuckets   RateLimitBucketRepository
 	ExternalIdentities ExternalIdentityRepository
 }
 

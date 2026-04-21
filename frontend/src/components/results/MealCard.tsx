@@ -1,6 +1,13 @@
-import { MealRecommendation } from "@/lib/types";
+import { MealRecommendation, RecommendationExplanation } from "@/lib/types";
 
-export function MealCard({ meal }: { meal: MealRecommendation }) {
+type Props = {
+  meal: MealRecommendation;
+  explanation?: RecommendationExplanation;
+  loadingExplanation?: boolean;
+  onExplain?: () => void;
+};
+
+export function MealCard({ meal, explanation, loadingExplanation, onExplain }: Props) {
   return (
     <div className="nm-card">
       <div className="nm-meal-top">
@@ -23,6 +30,31 @@ export function MealCard({ meal }: { meal: MealRecommendation }) {
       </div>
 
       <p className="nm-reason">{meal.matchReason}</p>
+
+      {onExplain && (
+        <div className="nm-inline-actions">
+          <button
+            type="button"
+            className="nm-link-btn"
+            onClick={onExplain}
+            disabled={loadingExplanation}
+          >
+            {loadingExplanation ? "Loading explanation..." : "View explanation"}
+          </button>
+        </div>
+      )}
+
+      {explanation && (
+        <div className="nm-explain-box">
+          <p className="nm-reason">{explanation.explanation}</p>
+          <p className="nm-muted">
+            Accepted: {explanation.acceptedReasons.join(", ") || "-"}
+          </p>
+          <p className="nm-muted">
+            Rejected: {explanation.rejectedReasons.join(", ") || "-"}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

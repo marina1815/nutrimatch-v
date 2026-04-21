@@ -17,5 +17,5 @@ type RecommendationRun struct {
 }
 
 func (RecommendationRun) TableName() string {
-	return "health.recommendation_runs"
+	return "recommendation.runs"
 }

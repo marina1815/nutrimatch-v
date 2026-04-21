@@ -1,0 +1,90 @@
+package services
+
+import (
+	"context"
+	"testing"
+
+	"github.com/marina1815/nutrimatch/internal/models"
+	"github.com/marina1815/nutrimatch/internal/repository"
+)
+
+type fakeSimilarityRepository struct {
+	bundles []repository.ProfileBundle
+}
+
+func (r *fakeSimilarityRepository) ListProfileBundles(_ context.Context, _ string, _ int) ([]repository.ProfileBundle, error) {
+	return r.bundles, nil
+}
+
+func (r *fakeSimilarityRepository) UpsertProfile(_ context.Context, _ *models.Profile) error {
+	return nil
+}
+func (r *fakeSimilarityRepository) UpsertLifestyle(_ context.Context, _ *models.Lifestyle) error {
+	return nil
+}
+func (r *fakeSimilarityRepository) UpsertPreferences(_ context.Context, _ *models.Preferences) error {
+	return nil
+}
+func (r *fakeSimilarityRepository) UpsertConstraints(_ context.Context, _ *models.Constraints) error {
+	return nil
+}
+func (r *fakeSimilarityRepository) GetProfile(_ context.Context, _ string) (*models.Profile, *models.Lifestyle, *models.Preferences, *models.Constraints, error) {
+	return nil, nil, nil, nil, nil
+}
+func (r *fakeSimilarityRepository) UpsertNutritionProfile(_ context.Context, _ *models.NutritionProfile) error {
+	return nil
+}
+func (r *fakeSimilarityRepository) GetNutritionProfile(_ context.Context, _ string) (*models.NutritionProfile, error) {
+	return nil, nil
+}
+
+type fakeSemanticExpander struct {
+	signals *SimilaritySignals
+}
+
+func (e *fakeSemanticExpander) Expand(_ context.Context, _ string, _, _ []string) (*SimilaritySignals, error) {
+	return e.signals, nil
+}
+
+func TestSimilarityServiceMergesDeterministicAndSemanticSignals(t *testing.T) {
+	service := &SimilarityService{
+		Profiles: &fakeSimilarityRepository{
+			bundles: []repository.ProfileBundle{
+				{
+					UserID:        "peer-1",
+					Age:           24,
+					ActivityLevel: "light",
+					Goal:          "weight_loss",
+					Likes:         []string{"quinoa"},
+					MealStyles:    []string{"healthy"},
+				},
+			},
+		},
+		Semantic: &fakeSemanticExpander{
+			signals: &SimilaritySignals{
+				Likes:        []string{"lentils"},
+				MealStyles:   []string{"modern"},
+				Sources:      []string{"semantic_vector_stub"},
+				SemanticUsed: true,
+			},
+		},
+	}
+
+	signals, err := service.Expand(context.Background(), "user-1", 25, "light", "weight_loss", []string{"chicken"}, []string{"balanced"})
+	if err != nil {
+		t.Fatalf("unexpected similarity expansion error: %v", err)
+	}
+
+	if len(signals.Likes) != 2 {
+		t.Fatalf("expected merged likes from deterministic and semantic stages, got %+v", signals.Likes)
+	}
+	if len(signals.MealStyles) != 2 {
+		t.Fatalf("expected merged meal styles, got %+v", signals.MealStyles)
+	}
+	if !signals.DeterministicUsed || !signals.SemanticUsed {
+		t.Fatalf("expected deterministic and semantic stages to both be marked as used: %+v", signals)
+	}
+	if len(signals.Sources) != 2 {
+		t.Fatalf("expected provenance sources for both stages, got %+v", signals.Sources)
+	}
+}

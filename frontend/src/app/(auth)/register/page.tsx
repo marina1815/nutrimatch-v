@@ -1,6 +1,10 @@
 "use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { ApiError, registerUser } from "@/lib/api";
+import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 interface FormState {
   name: string;
@@ -8,51 +12,75 @@ interface FormState {
   password: string;
   confirm: string;
 }
+
 interface FormErrors {
   name?: string;
   email?: string;
   password?: string;
   confirm?: string;
+  form?: string;
 }
 
 export default function RegisterPage() {
+  const router = useRouter();
   const [form, setForm] = useState<FormState>({ name: "", email: "", password: "", confirm: "" });
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
 
-  const set = (field: keyof FormState) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    setForm((f) => ({ ...f, [field]: e.target.value }));
-    setErrors((err) => ({ ...err, [field]: undefined }));
+  const setField = (field: keyof FormState) => (event: React.ChangeEvent<HTMLInputElement>) => {
+    setForm((current) => ({ ...current, [field]: event.target.value }));
+    setErrors((current) => ({ ...current, [field]: undefined, form: undefined }));
   };
 
   const validate = (): FormErrors => {
-    const e: FormErrors = {};
-    if (form.name.trim().length < 2) e.name = "Name must be at least 2 characters";
-    if (!form.email.includes("@")) e.email = "Enter a valid email address";
-    if (form.password.length < 8) e.password = "Password must be at least 8 characters";
-    if (form.confirm !== form.password) e.confirm = "Passwords do not match";
-    return e;
+    const nextErrors: FormErrors = {};
+    if (form.name.trim().length < 2) nextErrors.name = "Name must be at least 2 characters";
+    if (!form.email.includes("@")) nextErrors.email = "Enter a valid email address";
+    if (form.password.length < 12) nextErrors.password = "Password must be at least 12 characters";
+    if (form.confirm !== form.password) nextErrors.confirm = "Passwords do not match";
+    return nextErrors;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const errs = validate();
-    if (Object.keys(errs).length) { setErrors(errs); return; }
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const nextErrors = validate();
+    if (Object.keys(nextErrors).length > 0) {
+      setErrors(nextErrors);
+      return;
+    }
+
     setLoading(true);
-    // TODO: POST /api/auth/register
-    setTimeout(() => { setLoading(false); window.location.href = "/onboarding"; }, 1200);
+    setErrors({});
+
+    try {
+      await registerUser({
+        name: form.name,
+        email: form.email,
+        password: form.password,
+      });
+      router.push("/onboarding");
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setErrors({ form: getSafeErrorMessage(error, "auth.register") });
+      } else {
+        setErrors({ form: getSafeErrorMessage(error, "auth.register") });
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const strength = (() => {
-    const p = form.password;
-    if (!p) return 0;
-    let s = 0;
-    if (p.length >= 8) s++;
-    if (/[A-Z]/.test(p)) s++;
-    if (/[0-9]/.test(p)) s++;
-    if (/[^A-Za-z0-9]/.test(p)) s++;
-    return s;
+    const password = form.password;
+    if (!password) return 0;
+    let score = 0;
+    if (password.length >= 12) score++;
+    if (/[A-Z]/.test(password)) score++;
+    if (/[0-9]/.test(password)) score++;
+    if (/[^A-Za-z0-9]/.test(password)) score++;
+    return score;
   })();
+
   const strengthLabel = ["", "Weak", "Fair", "Good", "Strong"][strength];
   const strengthColor = ["", "#f87171", "#fbbf24", "#60a5fa", "#4ade80"][strength];
 
@@ -64,48 +92,57 @@ export default function RegisterPage() {
         <h1 className="title">Create your account</h1>
         <p className="sub">Start building your personalised nutrition profile</p>
 
-        <form onSubmit={handleSubmit} className="form" noValidate>
-          {/* Name */}
+        <form onSubmit={(event) => void handleSubmit(event)} className="form" noValidate>
           <div className="field">
             <label className="label" htmlFor="name">Full name</label>
             <input
-              id="name" type="text" autoComplete="name"
+              id="name"
+              type="text"
+              autoComplete="name"
               placeholder="Amine Benali"
+              maxLength={120}
               className={`input ${errors.name ? "input-error" : ""}`}
-              value={form.name} onChange={set("name")}
+              value={form.name}
+              onChange={setField("name")}
             />
             {errors.name && <span className="error">{errors.name}</span>}
           </div>
 
-          {/* Email */}
           <div className="field">
             <label className="label" htmlFor="email">Email</label>
             <input
-              id="email" type="email" autoComplete="email"
+              id="email"
+              type="email"
+              autoComplete="email"
               placeholder="you@example.com"
+              maxLength={254}
               className={`input ${errors.email ? "input-error" : ""}`}
-              value={form.email} onChange={set("email")}
+              value={form.email}
+              onChange={setField("email")}
             />
             {errors.email && <span className="error">{errors.email}</span>}
           </div>
 
-          {/* Password */}
           <div className="field">
             <label className="label" htmlFor="password">Password</label>
             <input
-              id="password" type="password" autoComplete="new-password"
-              placeholder="Min. 8 characters"
+              id="password"
+              type="password"
+              autoComplete="new-password"
+              placeholder="Min. 12 characters"
+              maxLength={128}
               className={`input ${errors.password ? "input-error" : ""}`}
-              value={form.password} onChange={set("password")}
+              value={form.password}
+              onChange={setField("password")}
             />
             {form.password && (
               <div className="strength-row">
                 <div className="strength-bar">
-                  {[1,2,3,4].map((i) => (
+                  {[1, 2, 3, 4].map((index) => (
                     <div
-                      key={i}
+                      key={index}
                       className="strength-seg"
-                      style={{ background: i <= strength ? strengthColor : "var(--border)" }}
+                      style={{ background: index <= strength ? strengthColor : "var(--border)" }}
                     />
                   ))}
                 </div>
@@ -115,23 +152,27 @@ export default function RegisterPage() {
             {errors.password && <span className="error">{errors.password}</span>}
           </div>
 
-          {/* Confirm */}
           <div className="field">
             <label className="label" htmlFor="confirm">Confirm password</label>
             <input
-              id="confirm" type="password" autoComplete="new-password"
-              placeholder="••••••••"
+              id="confirm"
+              type="password"
+              autoComplete="new-password"
+              placeholder="........"
+              maxLength={128}
               className={`input ${errors.confirm ? "input-error" : ""}`}
-              value={form.confirm} onChange={set("confirm")}
+              value={form.confirm}
+              onChange={setField("confirm")}
             />
             {errors.confirm && <span className="error">{errors.confirm}</span>}
           </div>
 
-          {/* Terms */}
           <p className="terms">
             By creating an account you agree that your data is used solely to generate
             personalised meal suggestions and is never shared with third parties.
           </p>
+
+          {errors.form && <span className="error">{errors.form}</span>}
 
           <button type="submit" className="btn" disabled={loading}>
             {loading ? <span className="spinner" /> : "Create account"}
@@ -186,7 +227,6 @@ export default function RegisterPage() {
         .input-error { border-color: var(--error) !important; }
         .error { font-size: 0.78rem; color: var(--error); }
 
-        /* Password strength */
         .strength-row { display: flex; align-items: center; gap: 0.75rem; }
         .strength-bar { display: flex; gap: 4px; flex: 1; }
         .strength-seg { height: 3px; flex: 1; border-radius: 99px; transition: background 0.3s; }

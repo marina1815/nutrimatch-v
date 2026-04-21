@@ -28,10 +28,19 @@ func (r *SessionRepository) GetByRefreshHash(ctx context.Context, refreshHash st
 	return &session, nil
 }
 
-func (r *SessionRepository) Rotate(ctx context.Context, sessionID, newRefreshHash string, expiresAt time.Time) error {
+func (r *SessionRepository) Rotate(ctx context.Context, sessionID, newRefreshHash string, expiresAt, idleExpiresAt time.Time) error {
 	return r.db.WithContext(ctx).Model(&models.Session{}).Where("id = ?", sessionID).Updates(map[string]any{
 		"refresh_token_hash": newRefreshHash,
 		"expires_at":         expiresAt,
+		"idle_expires_at":    idleExpiresAt,
+		"last_seen_at":       time.Now(),
+	}).Error
+}
+
+func (r *SessionRepository) Touch(ctx context.Context, sessionID string, idleExpiresAt time.Time) error {
+	return r.db.WithContext(ctx).Model(&models.Session{}).Where("id = ? AND revoked_at IS NULL", sessionID).Updates(map[string]any{
+		"idle_expires_at": idleExpiresAt,
+		"last_seen_at":    time.Now(),
 	}).Error
 }
 

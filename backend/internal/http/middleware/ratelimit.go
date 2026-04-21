@@ -2,31 +2,34 @@ package middleware
 
 import (
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/marina1815/nutrimatch/internal/repository"
+	"github.com/marina1815/nutrimatch/internal/security"
 	"golang.org/x/time/rate"
 )
 
-var (
-	visitors = map[string]*visitor{}
-	mu       sync.Mutex
-	once     sync.Once
-)
+var defaultHTTPRateLimitStore = security.NewInMemoryTokenBucketStore()
 
-type visitor struct {
-	limiter  *rate.Limiter
-	lastSeen time.Time
+type ratePolicyConfig struct {
+	BucketType string
+	Limit      rate.Limit
+	Burst      int
 }
 
-func RateLimit() gin.HandlerFunc {
-	startLimiterCleanup()
+func RateLimit(store repository.RateLimitBucketRepository) gin.HandlerFunc {
+	bucketStore := chooseHTTPRateLimitStore(store)
+
 	return func(c *gin.Context) {
 		key := rateKey(c)
-		limit, burst := ratePolicy(c)
-		limiter := getLimiter(key, limit, burst)
-		if !limiter.Allow() {
+		policy := ratePolicy(c)
+		allowed, err := bucketStore.TakeToken(c.Request.Context(), key, policy.BucketType, float64(policy.Limit), policy.Burst, time.Now())
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "rate limiter unavailable"})
+			return
+		}
+		if !allowed {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit"})
 			return
 		}
@@ -34,51 +37,33 @@ func RateLimit() gin.HandlerFunc {
 	}
 }
 
-func getLimiter(key string, limit rate.Limit, burst int) *rate.Limiter {
-	mu.Lock()
-	defer mu.Unlock()
-
-	entry, exists := visitors[key]
-	if !exists {
-		entry = &visitor{
-			limiter:  rate.NewLimiter(limit, burst),
-			lastSeen: time.Now(),
-		}
-		visitors[key] = entry
-		return entry.limiter
+func chooseHTTPRateLimitStore(store repository.RateLimitBucketRepository) security.TokenBucketStore {
+	if store != nil {
+		return store
 	}
-
-	entry.lastSeen = time.Now()
-	return entry.limiter
-}
-
-func startLimiterCleanup() {
-	once.Do(func() {
-		go func() {
-			ticker := time.NewTicker(5 * time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
-				cutoff := time.Now().Add(-15 * time.Minute)
-				mu.Lock()
-				for key, entry := range visitors {
-					if entry.lastSeen.Before(cutoff) {
-						delete(visitors, key)
-					}
-				}
-				mu.Unlock()
-			}
-		}()
-	})
+	return defaultHTTPRateLimitStore
 }
 
 func rateKey(c *gin.Context) string {
-	return c.ClientIP() + "|" + c.FullPath()
+	return security.SecureCacheKey("http_rate_limit", c.ClientIP(), c.FullPath())
 }
 
-func ratePolicy(c *gin.Context) (rate.Limit, int) {
+func ratePolicy(c *gin.Context) ratePolicyConfig {
 	path := c.FullPath()
 	if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" || path == "/api/v1/auth/refresh" {
-		return rate.Every(1500 * time.Millisecond), 5
+		return ratePolicyConfig{
+			BucketType: "auth_http_rate_limit",
+			Limit:      rate.Every(1500 * time.Millisecond),
+			Burst:      5,
+		}
 	}
-	return rate.Every(200 * time.Millisecond), 20
+	return ratePolicyConfig{
+		BucketType: "default_http_rate_limit",
+		Limit:      rate.Every(200 * time.Millisecond),
+		Burst:      20,
+	}
+}
+
+func ResetRateLimitStateForTest() {
+	defaultHTTPRateLimitStore.Reset()
 }

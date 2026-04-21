@@ -1,39 +1,58 @@
 "use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { ApiError, loginUser } from "@/lib/api";
+import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 export default function LoginPage() {
+  const router = useRouter();
   const [form, setForm] = useState({ email: "", password: "" });
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [errors, setErrors] = useState<{ email?: string; password?: string; form?: string }>({});
   const [loading, setLoading] = useState(false);
 
   const validate = () => {
-    const e: typeof errors = {};
-    if (!form.email.includes("@")) e.email = "Enter a valid email address";
-    if (form.password.length < 6) e.password = "Password must be at least 6 characters";
-    return e;
+    const nextErrors: typeof errors = {};
+    if (!form.email.includes("@")) nextErrors.email = "Enter a valid email address";
+    if (form.password.length < 6) nextErrors.password = "Password must be at least 6 characters";
+    return nextErrors;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const errs = validate();
-    if (Object.keys(errs).length) { setErrors(errs); return; }
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const nextErrors = validate();
+    if (Object.keys(nextErrors).length > 0) {
+      setErrors(nextErrors);
+      return;
+    }
+
     setLoading(true);
-    // TODO: POST /api/auth/login
-    setTimeout(() => { setLoading(false); window.location.href = "/onboarding"; }, 1200);
+    setErrors({});
+
+    try {
+      await loginUser(form);
+      router.push("/onboarding");
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setErrors({ form: getSafeErrorMessage(error, "auth.login") });
+      } else {
+        setErrors({ form: getSafeErrorMessage(error, "auth.login") });
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <main className="page">
       <div className="card">
-        {/* Logo */}
         <Link href="/" className="logo">NutriMatch</Link>
 
         <h1 className="title">Welcome back</h1>
         <p className="sub">Sign in to access your nutrition profile</p>
 
-        <form onSubmit={handleSubmit} className="form" noValidate>
-          {/* Email */}
+        <form onSubmit={(event) => void handleSubmit(event)} className="form" noValidate>
           <div className="field">
             <label className="label" htmlFor="email">Email</label>
             <input
@@ -41,14 +60,17 @@ export default function LoginPage() {
               type="email"
               autoComplete="email"
               placeholder="you@example.com"
+              maxLength={254}
               className={`input ${errors.email ? "input-error" : ""}`}
               value={form.email}
-              onChange={(e) => { setForm({ ...form, email: e.target.value }); setErrors({ ...errors, email: undefined }); }}
+              onChange={(event) => {
+                setForm({ ...form, email: event.target.value });
+                setErrors({ ...errors, email: undefined, form: undefined });
+              }}
             />
             {errors.email && <span className="error">{errors.email}</span>}
           </div>
 
-          {/* Password */}
           <div className="field">
             <div className="label-row">
               <label className="label" htmlFor="password">Password</label>
@@ -58,13 +80,19 @@ export default function LoginPage() {
               id="password"
               type="password"
               autoComplete="current-password"
-              placeholder="••••••••"
+              placeholder="........"
+              maxLength={128}
               className={`input ${errors.password ? "input-error" : ""}`}
               value={form.password}
-              onChange={(e) => { setForm({ ...form, password: e.target.value }); setErrors({ ...errors, password: undefined }); }}
+              onChange={(event) => {
+                setForm({ ...form, password: event.target.value });
+                setErrors({ ...errors, password: undefined, form: undefined });
+              }}
             />
             {errors.password && <span className="error">{errors.password}</span>}
           </div>
+
+          {errors.form && <span className="error">{errors.form}</span>}
 
           <button type="submit" className="btn" disabled={loading}>
             {loading ? <span className="spinner" /> : "Sign in"}
@@ -120,7 +148,7 @@ export default function LoginPage() {
           color: var(--text); font-size: 0.92rem; font-family: var(--font-body);
           outline: none; transition: border-color 0.2s, box-shadow 0.2s; width: 100%;
         }
-        .input::placeho lder { color: var(--muted); }
+        .input::placeholder { color: var(--muted); }
         .input:focus { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-glow); }
         .input-error { border-color: var(--error) !important; }
         .error { font-size: 0.78rem; color: var(--error); }
