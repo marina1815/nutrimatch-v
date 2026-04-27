@@ -8,3 +8,5 @@ bin/
 test/
 .idea/
 *.iml
+*.go.[0-9]*
+*.tsbuildinfo

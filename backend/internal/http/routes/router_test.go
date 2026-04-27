@@ -81,6 +81,16 @@ func (r *memoryUserRepository) UpdateFullName(_ context.Context, userID, fullNam
 	return nil
 }
 
+func (r *memoryUserRepository) UpdatePasswordHash(_ context.Context, userID, passwordHash string) error {
+	user, ok := r.byID[userID]
+	if !ok {
+		return errors.New("not found")
+	}
+	user.PasswordHash = passwordHash
+	r.byEmail[user.Email] = user
+	return nil
+}
+
 type memorySessionRepository struct {
 	byID          map[string]*models.Session
 	byRefreshHash map[string]*models.Session
@@ -122,17 +132,31 @@ func (r *memorySessionRepository) GetByRefreshHash(_ context.Context, refreshHas
 	return &copied, nil
 }
 
-func (r *memorySessionRepository) Rotate(_ context.Context, sessionID, newRefreshHash string, expiresAt, idleExpiresAt time.Time) error {
+func (r *memorySessionRepository) Rotate(_ context.Context, sessionID, oldRefreshHash, newRefreshHash, csrfBindingID string, expiresAt, idleExpiresAt time.Time) error {
 	session, ok := r.byID[sessionID]
 	if !ok {
 		return errors.New("not found")
 	}
+	if session.RefreshTokenHash != oldRefreshHash || session.RevokedAt != nil || session.ExpiresAt.Before(time.Now()) || session.IdleExpiresAt.Before(time.Now()) {
+		return errors.New("not found")
+	}
 	delete(r.byRefreshHash, session.RefreshTokenHash)
 	session.RefreshTokenHash = newRefreshHash
+	session.CSRFBindingID = csrfBindingID
 	session.ExpiresAt = expiresAt
 	session.IdleExpiresAt = idleExpiresAt
 	session.LastSeenAt = time.Now()
 	r.byRefreshHash[newRefreshHash] = session
+	return nil
+}
+
+func (r *memorySessionRepository) RevokeOthers(_ context.Context, userID, keepSessionID string) error {
+	now := time.Now()
+	for _, session := range r.byID {
+		if session.UserID == userID && session.ID != keepSessionID {
+			session.RevokedAt = &now
+		}
+	}
 	return nil
 }
 
@@ -154,6 +178,28 @@ func (r *memorySessionRepository) Revoke(_ context.Context, sessionID string) er
 	now := time.Now()
 	session.RevokedAt = &now
 	return nil
+}
+
+func (r *memorySessionRepository) RevokeForUser(_ context.Context, userID, sessionID string) error {
+	session, ok := r.byID[sessionID]
+	if !ok || session.UserID != userID {
+		return errors.New("not found")
+	}
+	now := time.Now()
+	session.RevokedAt = &now
+	return nil
+}
+
+func (r *memorySessionRepository) ListByUser(_ context.Context, userID string, _ int) ([]models.Session, error) {
+	out := make([]models.Session, 0)
+	for _, session := range r.byID {
+		if session.UserID != userID {
+			continue
+		}
+		copied := *session
+		out = append(out, copied)
+	}
+	return out, nil
 }
 
 func (r *memoryAuthFailureRepository) Create(_ context.Context, failure *models.AuthFailure) error {
@@ -333,6 +379,10 @@ func (r *memoryTraceRepository) GetCandidateByRecipeID(_ context.Context, userID
 type noopAuditRepository struct{}
 
 func (r *noopAuditRepository) Create(_ context.Context, _ *models.AuditEvent) error { return nil }
+func (r *noopAuditRepository) LatestHash(_ context.Context) (string, error)         { return "", nil }
+func (r *noopAuditRepository) ListSince(_ context.Context, _ time.Time, _ int) ([]models.AuditEvent, error) {
+	return []models.AuditEvent{}, nil
+}
 
 type noopExternalIdentityRepository struct{}
 
@@ -707,8 +757,12 @@ func defaultProfilePayload(fullName string) map[string]any {
 
 func upsertProfileForToken(t *testing.T, client *http.Client, serverURL, accessToken string, payload map[string]any) string {
 	t.Helper()
+	cfg := testConfig()
+	csrfToken := csrfTokenFromClient(t, client, serverURL, cfg)
 	resp := doJSON(t, client, http.MethodPost, serverURL+"/api/v1/profile", payload, map[string]string{
-		"Authorization": "Bearer " + accessToken,
+		"Authorization":    "Bearer " + accessToken,
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected profile status 200, got %d", resp.StatusCode)
@@ -779,8 +833,11 @@ func TestRouterRegisterProfileRecommendationFlow(t *testing.T) {
 		},
 	}
 
+	profileCSRF := csrfTokenFromClient(t, client, server.URL, cfg)
 	profileResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/profile", profilePayload, map[string]string{
-		"Authorization": "Bearer " + accessToken,
+		"Authorization":    "Bearer " + accessToken,
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: profileCSRF,
 	})
 	if profileResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected profile status 200, got %d", profileResp.StatusCode)
@@ -996,8 +1053,11 @@ func TestRouterRejectsProfilePayloadWithUnknownFields(t *testing.T) {
 		},
 	}
 
+	profileCSRF := csrfTokenFromClient(t, client, server.URL, cfg)
 	profileResp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/profile", profilePayload, map[string]string{
-		"Authorization": "Bearer " + accessToken,
+		"Authorization":    "Bearer " + accessToken,
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: profileCSRF,
 	})
 	defer profileResp.Body.Close()
 
@@ -1018,8 +1078,11 @@ func TestRouterRejectsAmbiguousProfilePayload(t *testing.T) {
 	constraints["takesMedication"] = false
 	constraints["medications"] = "daily statin"
 
+	csrfToken := csrfTokenFromClient(t, client, server.URL, cfg)
 	resp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/profile", payload, map[string]string{
-		"Authorization": "Bearer " + accessToken,
+		"Authorization":    "Bearer " + accessToken,
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
 	})
 	defer resp.Body.Close()
 
@@ -1045,8 +1108,11 @@ func TestRouterRejectsOverComplexProfilePayload(t *testing.T) {
 	preferences["likes"] = likes
 	preferences["dislikes"] = dislikes
 
+	csrfToken := csrfTokenFromClient(t, client, server.URL, cfg)
 	resp := doJSON(t, client, http.MethodPost, server.URL+"/api/v1/profile", payload, map[string]string{
-		"Authorization": "Bearer " + accessToken,
+		"Authorization":    "Bearer " + accessToken,
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
 	})
 	defer resp.Body.Close()
 

@@ -3,6 +3,7 @@
     "name": "NutriMatch API",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "auth": { "type": "noauth" },
   "item": [
     {
       "name": "Health",
@@ -20,10 +21,44 @@
       "name": "Auth",
       "item": [
         {
+          "name": "GET /api/v1/auth/csrf",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.environment.set('csrf_token', json.data.csrf_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Origin", "value": "{{frontend_origin}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/csrf"
+          }
+        },
+        {
           "name": "POST /api/v1/auth/register",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.data && json.data.access_token) pm.environment.set('access_token', json.data.access_token);"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
               { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
@@ -31,26 +66,26 @@
               "raw": "{\n  \"name\": \"Amine Benali\",\n  \"email\": \"amine@example.com\",\n  \"password\": \"StrongPass123!\"\n}"
             },
             "url": "{{base_url}}/api/v1/auth/register"
-          },
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/login",
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
                   "const json = pm.response.json();",
-                  "if (json && json.access_token) {",
-                  "  pm.environment.set('access_token', json.access_token);",
-                  "}"
+                  "if (json.data && json.data.access_token) pm.environment.set('access_token', json.data.access_token);"
                 ]
               }
             }
-          ]
-        },
-        {
-          "name": "POST /api/v1/auth/login",
+          ],
           "request": {
             "method": "POST",
             "header": [
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
               { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
@@ -58,45 +93,253 @@
               "raw": "{\n  \"email\": \"amine@example.com\",\n  \"password\": \"StrongPass123!\"\n}"
             },
             "url": "{{base_url}}/api/v1/auth/login"
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "const json = pm.response.json();",
-                  "if (json && json.access_token) {",
-                  "  pm.environment.set('access_token', json.access_token);",
-                  "}"
-                ]
-              }
-            }
-          ]
+          }
         },
         {
           "name": "POST /api/v1/auth/refresh",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/api/v1/auth/refresh"
-          },
           "event": [
             {
               "listen": "test",
               "script": {
                 "exec": [
                   "const json = pm.response.json();",
-                  "if (json && json.access_token) {",
-                  "  pm.environment.set('access_token', json.access_token);",
-                  "}"
+                  "if (json.data && json.data.access_token) pm.environment.set('access_token', json.data.access_token);"
                 ]
               }
             }
-          ]
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/refresh"
+          }
+        },
+        {
+          "name": "GET /api/v1/auth/whoami",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.data && json.data.sessionId) pm.environment.set('session_id', json.data.sessionId);",
+                  "if (json.data && json.data.profileId) pm.environment.set('profile_id', json.data.profileId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/whoami"
+          }
+        },
+        {
+          "name": "GET /api/v1/auth/sessions",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/sessions"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/password/change",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"StrongPass123!\",\n  \"newPassword\": \"NewStrongPass123!\",\n  \"confirmPassword\": \"NewStrongPass123!\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/password/change"
+          }
+        },
+        {
+          "name": "GET /api/v1/auth/mfa/status",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/mfa/status"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/totp/setup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.data && json.data.secret) pm.environment.set('totp_secret', json.data.secret);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/mfa/totp/setup"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/totp/confirm",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"123456\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/mfa/totp/confirm"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/passkeys/registration/options",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.data && json.data.challengeId) pm.environment.set('passkey_challenge_id', json.data.challengeId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/mfa/passkeys/registration/options"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/passkeys/registration/finish",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"browser-generated\",\n  \"rawId\": \"browser-generated\",\n  \"type\": \"public-key\",\n  \"response\": {}\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/mfa/passkeys/registration/finish?challengeId={{passkey_challenge_id}}&displayName=Postman%20Passkey"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/passkeys/authentication/options",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.data && json.data.challengeId) pm.environment.set('passkey_challenge_id', json.data.challengeId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/mfa/passkeys/authentication/options"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/passkeys/authentication/finish",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"browser-generated\",\n  \"rawId\": \"browser-generated\",\n  \"type\": \"public-key\",\n  \"response\": {}\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/mfa/passkeys/authentication/finish?challengeId={{passkey_challenge_id}}"
+          }
+        },
+        {
+          "name": "POST /api/v1/auth/mfa/totp/disable",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"123456\"\n}"
+            },
+            "url": "{{base_url}}/api/v1/auth/mfa/totp/disable"
+          }
+        },
+        {
+          "name": "DELETE /api/v1/auth/sessions/:sessionId",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/auth/sessions/{{session_id}}"
+          }
+        },
+        {
+          "name": "GET /api/v1/auth/oidc/login",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/auth/oidc/login?redirect=/results"
+          }
         },
         {
           "name": "POST /api/v1/auth/logout",
           "request": {
             "method": "POST",
+            "header": [
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" }
+            ],
             "url": "{{base_url}}/api/v1/auth/logout"
           }
         }
@@ -107,15 +350,28 @@
       "item": [
         {
           "name": "POST /api/v1/profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.data && json.data.profileId) pm.environment.set('profile_id', json.data.profileId);"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+              { "key": "Authorization", "value": "Bearer {{access_token}}" },
+              { "key": "Origin", "value": "{{frontend_origin}}" },
+              { "key": "X-CSRF-Token", "value": "{{csrf_token}}" },
+              { "key": "Content-Type", "value": "application/json" }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"personal\": {\n    \"fullName\": \"Amine Benali\",\n    \"age\": 26,\n    \"sex\": \"male\",\n    \"weight\": 78,\n    \"height\": 178,\n    \"profession\": \"Developer\",\n    \"city\": \"Casablanca\"\n  },\n  \"lifestyle\": {\n    \"activityLevel\": \"moderate\",\n    \"lifestyleType\": \"employee\",\n    \"goal\": \"weight_maintenance\"\n  },\n  \"preferences\": {\n    \"likes\": [\"chicken\", \"rice\"],\n    \"dislikes\": [\"broccoli\"],\n    \"mealStyles\": [\"Traditionnel\"],\n    \"mealsPerDay\": 3\n  },\n  \"constraints\": {\n    \"allergies\": [\"peanut\"],\n    \"conditions\": [],\n    \"excludedIngredients\": [\"pork\"],\n    \"hasChronicDisease\": false,\n    \"chronicDiseases\": [],\n    \"takesMedication\": false,\n    \"medications\": \"\"\n  }\n}"
+              "raw": "{\n  \"personal\": {\n    \"fullName\": \"Amine Benali\",\n    \"age\": 26,\n    \"sex\": \"male\",\n    \"weight\": 78,\n    \"height\": 178,\n    \"profession\": \"Developer\",\n    \"city\": \"Casablanca\"\n  },\n  \"lifestyle\": {\n    \"activityLevel\": \"moderate\",\n    \"lifestyleType\": \"employee\",\n    \"goal\": \"weight_maintenance\",\n    \"maxReadyTime\": 45\n  },\n  \"preferences\": {\n    \"likes\": [\"chicken\", \"rice\"],\n    \"dislikes\": [\"broccoli\"],\n    \"mealStyles\": [\"healthy\", \"balanced\"],\n    \"mealTypes\": [\"lunch\", \"dinner\"],\n    \"preferredCuisines\": [\"mediterranean\"],\n    \"excludedCuisines\": [],\n    \"mealsPerDay\": 3\n  },\n  \"constraints\": {\n    \"allergies\": [\"peanut\"],\n    \"conditions\": [],\n    \"excludedIngredients\": [\"pork\"],\n    \"hasChronicDisease\": false,\n    \"chronicDiseases\": [],\n    \"takesMedication\": false,\n    \"medications\": \"\"\n  }\n}"
             },
             "url": "{{base_url}}/api/v1/profile"
           }
@@ -129,6 +385,36 @@
             ],
             "url": "{{base_url}}/api/v1/profile"
           }
+        },
+        {
+          "name": "GET /api/v1/profile?includeSensitive=true",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/profile?includeSensitive=true"
+          }
+        },
+        {
+          "name": "GET /api/v1/profile/nutrition",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/profile/nutrition"
+          }
+        },
+        {
+          "name": "GET /api/v1/profile/ingredients/suggest",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/profile/ingredients/suggest?q=pap&limit=5"
+          }
         }
       ]
     },
@@ -137,6 +423,18 @@
       "item": [
         {
           "name": "GET /api/v1/recommendations/:profileId",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const meals = (json.data && json.data.meals) || [];",
+                  "if (meals.length > 0) pm.environment.set('meal_id', meals[0].id);"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [
@@ -144,39 +442,28 @@
             ],
             "url": "{{base_url}}/api/v1/recommendations/{{profile_id}}"
           }
-        }
-      ]
-    },
-    {
-      "name": "Frontend Compatibility",
-      "item": [
-        {
-          "name": "POST /api/profile",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{access_token}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"personal\": {\n    \"fullName\": \"Amine Benali\",\n    \"age\": 26,\n    \"sex\": \"male\",\n    \"weight\": 78,\n    \"height\": 178,\n    \"profession\": \"Developer\",\n    \"city\": \"Casablanca\"\n  },\n  \"lifestyle\": {\n    \"activityLevel\": \"moderate\",\n    \"lifestyleType\": \"employee\",\n    \"goal\": \"weight_maintenance\"\n  },\n  \"preferences\": {\n    \"likes\": [\"chicken\", \"rice\"],\n    \"dislikes\": [\"broccoli\"],\n    \"mealStyles\": [\"Traditionnel\"],\n    \"mealsPerDay\": 3\n  },\n  \"constraints\": {\n    \"allergies\": [\"peanut\"],\n    \"conditions\": [],\n    \"excludedIngredients\": [\"pork\"],\n    \"hasChronicDisease\": false,\n    \"chronicDiseases\": [],\n    \"takesMedication\": false,\n    \"medications\": \"\"\n  }\n}"
-            },
-            "url": "{{base_url}}/api/profile"
-          }
         },
         {
-          "name": "GET /api/recommendations/:profileId",
+          "name": "GET /api/v1/recommendations/:profileId/trace",
           "request": {
             "method": "GET",
             "header": [
               { "key": "Authorization", "value": "Bearer {{access_token}}" }
             ],
-            "url": "{{base_url}}/api/recommendations/{{profile_id}}"
+            "url": "{{base_url}}/api/v1/recommendations/{{profile_id}}/trace"
+          }
+        },
+        {
+          "name": "GET /api/v1/recommendations/:profileId/explanation",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{access_token}}" }
+            ],
+            "url": "{{base_url}}/api/v1/recommendations/{{profile_id}}/explanation?mealId={{meal_id}}"
           }
         }
       ]
     }
   ]
 }
-

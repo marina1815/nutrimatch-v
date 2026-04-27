@@ -12,15 +12,19 @@ type UserRepository interface {
 	GetByEmail(ctx context.Context, email string) (*models.User, error)
 	GetByID(ctx context.Context, id string) (*models.User, error)
 	UpdateFullName(ctx context.Context, userID, fullName string) error
+	UpdatePasswordHash(ctx context.Context, userID, passwordHash string) error
 }
 
 type SessionRepository interface {
 	Create(ctx context.Context, session *models.Session) error
 	GetByID(ctx context.Context, sessionID string) (*models.Session, error)
 	GetByRefreshHash(ctx context.Context, refreshHash string) (*models.Session, error)
-	Rotate(ctx context.Context, sessionID, newRefreshHash string, expiresAt, idleExpiresAt time.Time) error
+	Rotate(ctx context.Context, sessionID, oldRefreshHash, newRefreshHash, csrfBindingID string, expiresAt, idleExpiresAt time.Time) error
 	Touch(ctx context.Context, sessionID string, idleExpiresAt time.Time) error
 	Revoke(ctx context.Context, sessionID string) error
+	RevokeForUser(ctx context.Context, userID, sessionID string) error
+	RevokeOthers(ctx context.Context, userID, keepSessionID string) error
+	ListByUser(ctx context.Context, userID string, limit int) ([]models.Session, error)
 }
 
 type ProfileRepository interface {
@@ -45,8 +49,27 @@ type RecommendationTraceRepository interface {
 	GetCandidateByRecipeID(ctx context.Context, userID, profileID, recipeID string) (*models.RecommendationCandidate, error)
 }
 
+type VectorRepository interface {
+	UpsertProfileEmbedding(ctx context.Context, embedding *models.ProfileEmbedding) error
+	SearchSimilarProfileBundles(ctx context.Context, userID, profileID, embeddingVersion, vectorLiteral string, limit int) ([]ProfileBundle, error)
+}
+
+type MFARepository interface {
+	GetTOTPSecret(ctx context.Context, userID string) (*models.TOTPSecret, error)
+	UpsertTOTPSecret(ctx context.Context, secret *models.TOTPSecret) error
+	EnableTOTP(ctx context.Context, userID string, confirmedAt time.Time) error
+	DisableTOTP(ctx context.Context, userID string) error
+	CreateWebAuthnCredential(ctx context.Context, credential *models.WebAuthnCredential) error
+	ListWebAuthnCredentials(ctx context.Context, userID string) ([]models.WebAuthnCredential, error)
+	UpdateWebAuthnCredentialUsed(ctx context.Context, credentialID string, usedAt time.Time) error
+	CreateWebAuthnChallenge(ctx context.Context, challenge *models.WebAuthnChallenge) error
+	ConsumeWebAuthnChallenge(ctx context.Context, userID, challengeID, kind string, now time.Time) (*models.WebAuthnChallenge, error)
+}
+
 type AuditRepository interface {
 	Create(ctx context.Context, event *models.AuditEvent) error
+	LatestHash(ctx context.Context) (string, error)
+	ListSince(ctx context.Context, since time.Time, limit int) ([]models.AuditEvent, error)
 }
 
 type AuthFailureRepository interface {
@@ -85,6 +108,8 @@ type Repositories struct {
 	Sessions           SessionRepository
 	MedicalRules       MedicalRuleRepository
 	RecommendationRuns RecommendationTraceRepository
+	Vectors            VectorRepository
+	MFA                MFARepository
 	Audit              AuditRepository
 	AuthFailures       AuthFailureRepository
 	RateLimitBuckets   RateLimitBucketRepository

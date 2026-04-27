@@ -70,7 +70,14 @@ func TestSimilarityServiceMergesDeterministicAndSemanticSignals(t *testing.T) {
 		},
 	}
 
-	signals, err := service.Expand(context.Background(), "user-1", 25, "light", "weight_loss", []string{"chicken"}, []string{"balanced"})
+	signals, err := service.Expand(
+		context.Background(),
+		"user-1",
+		&models.Profile{Age: 25},
+		&models.Lifestyle{ActivityLevel: "light", Goal: "weight_loss"},
+		&models.Preferences{Likes: models.StringSlice{"chicken"}, MealStyles: models.StringSlice{"balanced"}},
+		&models.Constraints{},
+	)
 	if err != nil {
 		t.Fatalf("unexpected similarity expansion error: %v", err)
 	}

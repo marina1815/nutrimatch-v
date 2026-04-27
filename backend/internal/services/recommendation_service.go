@@ -50,10 +50,12 @@ type recommendationTraceBundle struct {
 }
 
 type searchPlan struct {
-	Name    string
-	Query   string
-	Include []string
-	Exclude []string
+	Name             string
+	Query            string
+	Include          []string
+	Exclude          []string
+	MealTypes        []string
+	PreferredCuisine []string
 }
 
 type aiRerank struct {
@@ -152,7 +154,7 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 
 	signals := &SimilaritySignals{}
 	if s.Similarity != nil {
-		signals, err = s.Similarity.Expand(ctx, userID, profile.Age, lifestyle.ActivityLevel, lifestyle.Goal, []string(preferences.Likes), []string(preferences.MealStyles))
+		signals, err = s.Similarity.Expand(ctx, userID, profile, lifestyle, preferences, constraints)
 		if err != nil {
 			return nil, err
 		}
@@ -218,6 +220,8 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 			"enrichedRecipeCount": len(enrichedRecipes),
 			"similarityLikes":     signals.Likes,
 			"similarityStyles":    signals.MealStyles,
+			"similarityMealTypes": signals.MealTypes,
+			"similarityCuisines":  signals.Cuisines,
 			"similaritySources":   signals.Sources,
 			"semanticSimilarity":  signals.SemanticUsed,
 		},
@@ -365,28 +369,36 @@ func buildSearchPlans(preferences *models.Preferences, constraints *models.Const
 	queryTerms := mergeLists([]string(preferences.MealStyles), []string(preferences.Likes), []string(nutritionProfile.RecommendedMealStyles))
 	include := mergeLists([]string(preferences.Likes), signals.Likes)
 	exclude := mergeLists([]string(preferences.Dislikes), []string(constraints.Allergies), []string(constraints.ExcludedIngredients), []string(nutritionProfile.DerivedExcluded))
+	mealTypes := mergeLists([]string(preferences.MealTypes), signals.MealTypes)
+	preferredCuisine := mergeLists([]string(preferences.PreferredCuisines), signals.Cuisines)
 
 	plans := []searchPlan{
 		{
-			Name:    "strict_profile",
-			Query:   buildQuery(queryTerms, nil),
-			Include: include,
-			Exclude: exclude,
+			Name:             "strict_profile",
+			Query:            buildQuery(queryTerms, nil),
+			Include:          include,
+			Exclude:          exclude,
+			MealTypes:        mealTypes,
+			PreferredCuisine: preferredCuisine,
 		},
 		{
-			Name:    "goal_balanced",
-			Query:   buildQuery([]string{nutritionGoalKeyword(nutritionProfile)}, signals.MealStyles),
-			Include: nil,
-			Exclude: exclude,
+			Name:             "goal_balanced",
+			Query:            buildQuery([]string{nutritionGoalKeyword(nutritionProfile)}, signals.MealStyles),
+			Include:          nil,
+			Exclude:          exclude,
+			MealTypes:        mealTypes,
+			PreferredCuisine: preferredCuisine,
 		},
 	}
 
-	if len(signals.MealStyles) > 0 || len(signals.Likes) > 0 {
+	if len(signals.MealStyles) > 0 || len(signals.Likes) > 0 || len(signals.MealTypes) > 0 || len(signals.Cuisines) > 0 {
 		plans = append(plans, searchPlan{
-			Name:    "similarity_expansion",
-			Query:   buildQuery(signals.MealStyles, signals.Likes),
-			Include: signals.Likes,
-			Exclude: exclude,
+			Name:             "similarity_expansion",
+			Query:            buildQuery(signals.MealStyles, signals.Likes),
+			Include:          signals.Likes,
+			Exclude:          exclude,
+			MealTypes:        mealTypes,
+			PreferredCuisine: preferredCuisine,
 		})
 	}
 	return plans
@@ -426,11 +438,11 @@ func buildSearchOptions(plan searchPlan, lifestyle *models.Lifestyle, preference
 	preferredCuisines := []string{}
 	excludedCuisines := []string{}
 	if preferences != nil {
-		mealTypes := taxonomy.SpoonacularMealTypeList([]string(preferences.MealTypes))
+		mealTypes := taxonomy.SpoonacularMealTypeList(plan.MealTypes)
 		if len(mealTypes) > 0 {
 			mealType = mealTypes[0]
 		}
-		preferredCuisines = taxonomy.SpoonacularCuisineList([]string(preferences.PreferredCuisines))
+		preferredCuisines = taxonomy.SpoonacularCuisineList(plan.PreferredCuisine)
 		excludedCuisines = taxonomy.SpoonacularCuisineList([]string(preferences.ExcludedCuisines))
 	}
 
@@ -778,7 +790,7 @@ func normalizeIntolerances(items []string) []string {
 }
 
 func normalizeKeyword(input string) string {
-	trimmed := strings.TrimSpace(strings.ToLower(input))
+	trimmed := taxonomy.NormalizeLooseToken(input)
 	if trimmed == "" {
 		return ""
 	}
@@ -790,6 +802,7 @@ func normalizeKeyword(input string) string {
 		"repas froids":    "cold",
 		"rapide":          "quick",
 		"equilibre":       "balanced",
+		"equilibree":      "balanced",
 		"équilibré":       "balanced",
 	}
 	if v, ok := mapped[trimmed]; ok {

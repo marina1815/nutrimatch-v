@@ -5,6 +5,12 @@ type ErrorContext =
   | "auth.register"
   | "profile.load"
   | "profile.submit"
+  | "profile.security.password"
+  | "profile.security.totp.setup"
+  | "profile.security.totp.confirm"
+  | "profile.security.totp.disable"
+  | "profile.security.passkey.register"
+  | "profile.security.passkey.verify"
   | "recommendations.load"
   | "recommendations.explain";
 
@@ -13,6 +19,12 @@ const DEFAULT_MESSAGES: Record<ErrorContext, string> = {
   "auth.register": "Impossible de creer le compte pour le moment.",
   "profile.load": "Impossible de charger le profil.",
   "profile.submit": "Impossible d'enregistrer le profil pour le moment.",
+  "profile.security.password": "Impossible de modifier le mot de passe pour le moment.",
+  "profile.security.totp.setup": "Impossible de demarrer la configuration authenticator.",
+  "profile.security.totp.confirm": "Impossible de confirmer le code authenticator.",
+  "profile.security.totp.disable": "Impossible de desactiver authenticator pour le moment.",
+  "profile.security.passkey.register": "Impossible d'ajouter cette passkey pour le moment.",
+  "profile.security.passkey.verify": "Impossible de verifier cette passkey pour le moment.",
   "recommendations.load": "Impossible de charger les recommandations.",
   "recommendations.explain": "Impossible de charger l'explication de ce repas.",
 };
@@ -25,6 +37,12 @@ export function getSafeErrorMessage(error: unknown, context: ErrorContext): stri
           return "Les identifiants sont invalides ou la session n'est pas disponible.";
         case "profile.load":
         case "profile.submit":
+        case "profile.security.password":
+        case "profile.security.totp.setup":
+        case "profile.security.totp.confirm":
+        case "profile.security.totp.disable":
+        case "profile.security.passkey.register":
+        case "profile.security.passkey.verify":
         case "recommendations.load":
         case "recommendations.explain":
           return "Connecte-toi pour continuer.";

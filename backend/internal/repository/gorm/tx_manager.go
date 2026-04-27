@@ -23,6 +23,8 @@ func (m *TxManager) WithinTransaction(ctx context.Context, fn func(repository.Re
 			Sessions:           NewSessionRepository(tx),
 			MedicalRules:       NewMedicalRuleRepository(tx),
 			RecommendationRuns: NewRecommendationTraceRepository(tx),
+			Vectors:            NewVectorRepository(tx),
+			MFA:                NewMFARepository(tx),
 			Audit:              NewAuditRepository(tx),
 			AuthFailures:       NewAuthFailureRepository(tx),
 			RateLimitBuckets:   NewRateLimitBucketRepository(tx),

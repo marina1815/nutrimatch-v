@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/marina1815/nutrimatch/internal/clients/googleai"
 	"github.com/marina1815/nutrimatch/internal/clients/spoonacular"
 	"github.com/marina1815/nutrimatch/internal/config"
@@ -34,11 +35,13 @@ func main() {
 	sessionRepo := gormrepo.NewSessionRepository(db)
 	medicalRuleRepo := gormrepo.NewMedicalRuleRepository(db)
 	recommendationTraceRepo := gormrepo.NewRecommendationTraceRepository(db)
+	vectorRepo := gormrepo.NewVectorRepository(db)
 	searchResponseCacheRepo := gormrepo.NewSearchResponseCacheRepository(db)
 	auditRepo := gormrepo.NewAuditRepository(db)
 	authFailureRepo := gormrepo.NewAuthFailureRepository(db)
 	rateLimitBucketRepo := gormrepo.NewRateLimitBucketRepository(db)
 	externalIdentityRepo := gormrepo.NewExternalIdentityRepository(db)
+	mfaRepo := gormrepo.NewMFARepository(db)
 	txManager := gormrepo.NewTxManager(db)
 
 	tokens := &security.TokenManager{
@@ -58,6 +61,18 @@ func main() {
 		TTL:    cfg.CSRFTTL,
 	}
 	healthCipher, err := security.NewCipher(cfg.HealthDataKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mfaCipher, err := security.NewCipher(cfg.MFASecretKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+	webAuthn, err := webauthn.New(&webauthn.Config{
+		RPID:          cfg.WebAuthnRPID,
+		RPDisplayName: cfg.WebAuthnRPDisplayName,
+		RPOrigins:     cfg.WebAuthnOrigins,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -98,7 +113,12 @@ func main() {
 		Nutrition:    nutritionProfileService,
 		MedicalRules: medicalRuleRepo,
 	}
-	similarityService := &services.SimilarityService{Profiles: profileRepo}
+	similarityService := &services.SimilarityService{
+		Profiles:   profileRepo,
+		Vectors:    vectorRepo,
+		Embeddings: &services.EmbeddingService{Vectors: vectorRepo},
+		Semantic:   &services.LocalSemanticExpander{},
+	}
 	ingredientService := &services.IngredientService{}
 
 	recipeClient := &spoonacular.Client{
@@ -116,10 +136,13 @@ func main() {
 		CircuitBreakerThreshold: cfg.SpoonacularCircuitFailures,
 		CircuitBreakerCooldown:  cfg.SpoonacularCircuitCooldown,
 	}
-	aiClient := &googleai.Client{
-		BaseURL: cfg.GoogleAIBaseURL,
-		APIKey:  cfg.GoogleAIAPIKey,
-		Model:   cfg.GoogleAIModel,
+	var aiClient services.AITextGenerator
+	if cfg.GoogleAIAPIKey != "" {
+		aiClient = &googleai.Client{
+			BaseURL: cfg.GoogleAIBaseURL,
+			APIKey:  cfg.GoogleAIAPIKey,
+			Model:   cfg.GoogleAIModel,
+		}
 	}
 
 	recommendationService := &services.RecommendationService{
@@ -141,6 +164,13 @@ func main() {
 		TxManager:    txManager,
 		Auth:         authService,
 	}
+	mfaService := &services.MFAService{
+		Repo:     mfaRepo,
+		Users:    userRepo,
+		Cipher:   mfaCipher,
+		WebAuthn: webAuthn,
+		Issuer:   cfg.WebAuthnRPDisplayName,
+	}
 
 	authHandler := &handlers.AuthHandler{
 		Cfg:      cfg,
@@ -149,6 +179,7 @@ func main() {
 		Profiles: profileService,
 		CSRF:     csrfManager,
 		OIDC:     oidcService,
+		MFA:      mfaService,
 		Audit:    auditService,
 	}
 

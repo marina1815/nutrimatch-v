@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getCurrentSession } from "@/lib/api";
-import { clearClientSession, setAccessToken, setCurrentProfileId } from "@/lib/session";
+import { clearClientSession, setCurrentProfileId } from "@/lib/session";
 
 function normalizeNextPath(input: string | null) {
   if (!input || !input.startsWith("/") || input.startsWith("//")) {
@@ -21,17 +21,8 @@ function OIDCCallbackContent() {
     let active = true;
 
     const completeLogin = async () => {
-      const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-      const accessToken = fragment.get("access_token");
       const nextPath = normalizeNextPath(searchParams.get("next"));
 
-      if (!accessToken) {
-        clearClientSession();
-        if (active) setError("Le retour OpenID Connect est incomplet.");
-        return;
-      }
-
-      setAccessToken(accessToken);
       window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
 
       let target = nextPath;
@@ -44,9 +35,9 @@ function OIDCCallbackContent() {
           target = "/onboarding";
         }
       } catch {
-        if (target === "/results") {
-          target = "/onboarding";
-        }
+        clearClientSession();
+        if (active) setError("La session OpenID Connect n'a pas pu etre finalisee.");
+        return;
       }
 
       if (active) {

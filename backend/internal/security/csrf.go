@@ -16,19 +16,27 @@ type CSRFManager struct {
 }
 
 type csrfPayload struct {
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expiresAt"`
+	Token         string `json:"token"`
+	SessionID     string `json:"sessionId,omitempty"`
+	CSRFBindingID string `json:"csrfBindingId,omitempty"`
+	ExpiresAt     int64  `json:"expiresAt"`
 }
 
 func (m *CSRFManager) IssueToken() (string, error) {
+	return m.IssueTokenForSession("", "")
+}
+
+func (m *CSRFManager) IssueTokenForSession(sessionID, csrfBindingID string) (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
 
 	payload := csrfPayload{
-		Token:     base64.RawURLEncoding.EncodeToString(buf),
-		ExpiresAt: time.Now().Add(m.TTL).Unix(),
+		Token:         base64.RawURLEncoding.EncodeToString(buf),
+		SessionID:     sessionID,
+		CSRFBindingID: csrfBindingID,
+		ExpiresAt:     time.Now().Add(m.TTL).Unix(),
 	}
 	return m.signPayload(payload)
 }
@@ -40,6 +48,26 @@ func (m *CSRFManager) ValidateToken(raw string) error {
 	}
 	if time.Now().Unix() > payload.ExpiresAt {
 		return errors.New("csrf token expired")
+	}
+	return nil
+}
+
+func (m *CSRFManager) ValidateTokenForSession(raw, sessionID, csrfBindingID string) error {
+	payload, err := m.parsePayload(raw)
+	if err != nil {
+		return err
+	}
+	if time.Now().Unix() > payload.ExpiresAt {
+		return errors.New("csrf token expired")
+	}
+	if sessionID == "" {
+		if payload.SessionID != "" || payload.CSRFBindingID != "" {
+			return errors.New("csrf token requires authenticated session")
+		}
+		return nil
+	}
+	if payload.SessionID != sessionID || payload.CSRFBindingID != csrfBindingID {
+		return errors.New("csrf token session mismatch")
 	}
 	return nil
 }

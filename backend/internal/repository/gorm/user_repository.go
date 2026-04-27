@@ -2,6 +2,7 @@ package gormrepo
 
 import (
 	"context"
+	"time"
 
 	"github.com/marina1815/nutrimatch/internal/models"
 	"gorm.io/gorm"
@@ -39,3 +40,9 @@ func (r *UserRepository) UpdateFullName(ctx context.Context, userID, fullName st
 	return r.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", userID).Update("full_name", fullName).Error
 }
 
+func (r *UserRepository) UpdatePasswordHash(ctx context.Context, userID, passwordHash string) error {
+	return r.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"password_hash": passwordHash,
+		"updated_at":    time.Now(),
+	}).Error
+}

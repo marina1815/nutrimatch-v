@@ -1,6 +1,11 @@
 package taxonomy
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
+)
 
 type aliasTable map[string]string
 
@@ -288,6 +293,19 @@ func normalize(input string) string {
 		"ç", "c",
 		"œ", "oe",
 	)
-	normalized := replacer.Replace(trimmed)
+	normalized := stripDiacritics(replacer.Replace(trimmed))
 	return strings.Join(strings.Fields(normalized), " ")
+}
+
+func stripDiacritics(input string) string {
+	decomposed := norm.NFD.String(input)
+	out := strings.Builder{}
+	out.Grow(len(decomposed))
+	for _, r := range decomposed {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }

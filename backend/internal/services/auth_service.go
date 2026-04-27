@@ -13,6 +13,19 @@ import (
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
 var ErrAuthTemporarilyBlocked = errors.New("authentication temporarily blocked")
+var ErrSessionNotFound = errors.New("session not found")
+var ErrPasswordConfirmationMismatch = errors.New("password confirmation mismatch")
+
+type SessionSummary struct {
+	ID            string
+	AuthMethod    string
+	ExpiresAt     time.Time
+	IdleExpiresAt time.Time
+	CreatedAt     time.Time
+	LastSeenAt    time.Time
+	RevokedAt     *time.Time
+	Current       bool
+}
 
 // AuthService handles users and sessions.
 type AuthService struct {
@@ -98,7 +111,8 @@ func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string,
 	if err != nil {
 		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
 	}
-	if session.ExpiresAt.Before(time.Now()) || session.RevokedAt != nil {
+	now := time.Now()
+	if session.ExpiresAt.Before(now) || session.IdleExpiresAt.Before(now) || session.RevokedAt != nil {
 		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
 	}
 
@@ -113,8 +127,9 @@ func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string,
 	}
 
 	newHash := s.Tokens.HashRefreshToken(newRefresh)
-	if err := s.Sessions.Rotate(ctx, session.ID, newHash, refreshExp, s.idleExpiry(refreshExp)); err != nil {
-		return "", time.Time{}, "", time.Time{}, err
+	newCSRFBindingID := uuid.NewString()
+	if err := s.Sessions.Rotate(ctx, session.ID, refreshHash, newHash, newCSRFBindingID, refreshExp, s.idleExpiry(refreshExp)); err != nil {
+		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
 	}
 
 	return access, accessExp, newRefresh, refreshExp, nil
@@ -129,8 +144,84 @@ func (s *AuthService) Logout(ctx context.Context, refreshToken string) error {
 	return s.Sessions.Revoke(ctx, session.ID)
 }
 
+func (s *AuthService) SessionFromRefreshToken(ctx context.Context, refreshToken string) (*models.Session, error) {
+	refreshHash := s.Tokens.HashRefreshToken(refreshToken)
+	session, err := s.Sessions.GetByRefreshHash(ctx, refreshHash)
+	if err != nil {
+		return nil, ErrInvalidCredentials
+	}
+	return session, nil
+}
+
 func (s *AuthService) IssueSession(ctx context.Context, userID, authMethod, userAgent, ip string) (string, time.Time, string, time.Time, error) {
 	return s.createSession(ctx, s.Sessions, userID, authMethod, userAgent, ip)
+}
+
+func (s *AuthService) ListSessions(ctx context.Context, userID, currentSessionID string) ([]SessionSummary, error) {
+	if s == nil || s.Sessions == nil {
+		return nil, ErrSessionNotFound
+	}
+	sessions, err := s.Sessions.ListByUser(ctx, userID, 50)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionSummary, 0, len(sessions))
+	for _, session := range sessions {
+		out = append(out, SessionSummary{
+			ID:            session.ID,
+			AuthMethod:    session.AuthMethod,
+			ExpiresAt:     session.ExpiresAt,
+			IdleExpiresAt: session.IdleExpiresAt,
+			CreatedAt:     session.CreatedAt,
+			LastSeenAt:    session.LastSeenAt,
+			RevokedAt:     session.RevokedAt,
+			Current:       session.ID == currentSessionID,
+		})
+	}
+	return out, nil
+}
+
+func (s *AuthService) RevokeSession(ctx context.Context, userID, sessionID string) error {
+	if s == nil || s.Sessions == nil {
+		return ErrSessionNotFound
+	}
+	if err := s.Sessions.RevokeForUser(ctx, userID, sessionID); err != nil {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
+func (s *AuthService) ChangePassword(ctx context.Context, userID, currentSessionID, currentPassword, newPassword, confirmation string) error {
+	if newPassword != confirmation {
+		return ErrPasswordConfirmationMismatch
+	}
+
+	user, err := s.Users.GetByID(ctx, userID)
+	if err != nil {
+		return ErrInvalidCredentials
+	}
+	valid, verifyErr := security.VerifyPassword(currentPassword, user.PasswordHash)
+	if verifyErr != nil || !valid {
+		return ErrInvalidCredentials
+	}
+	hash, err := security.HashPassword(newPassword, s.PasswordParams)
+	if err != nil {
+		return err
+	}
+
+	if s.TxManager == nil {
+		if err := s.Users.UpdatePasswordHash(ctx, userID, hash); err != nil {
+			return err
+		}
+		return s.Sessions.RevokeOthers(ctx, userID, currentSessionID)
+	}
+
+	return s.TxManager.WithinTransaction(ctx, func(repos repository.Repositories) error {
+		if err := repos.Users.UpdatePasswordHash(ctx, userID, hash); err != nil {
+			return err
+		}
+		return repos.Sessions.RevokeOthers(ctx, userID, currentSessionID)
+	})
 }
 
 func (s *AuthService) createSession(ctx context.Context, sessions repository.SessionRepository, userID, authMethod, userAgent, ip string) (string, time.Time, string, time.Time, error) {
@@ -150,6 +241,7 @@ func (s *AuthService) createSession(ctx context.Context, sessions repository.Ses
 		UserID:           userID,
 		AuthMethod:       authMethod,
 		RefreshTokenHash: s.Tokens.HashRefreshToken(refresh),
+		CSRFBindingID:    uuid.NewString(),
 		ExpiresAt:        refreshExp,
 		IdleExpiresAt:    s.idleExpiry(refreshExp),
 		LastSeenAt:       time.Now(),

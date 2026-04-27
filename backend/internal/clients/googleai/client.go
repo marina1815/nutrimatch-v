@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+const maxResponseBytes = 1 << 20
 
 type Client struct {
 	BaseURL string
@@ -70,7 +73,7 @@ func (c *Client) GenerateText(ctx context.Context, prompt string) (string, error
 	}
 
 	var out GenerateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
 		return "", err
 	}
 	if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
@@ -78,4 +81,3 @@ func (c *Client) GenerateText(ctx context.Context, prompt string) (string, error
 	}
 	return out.Candidates[0].Content.Parts[0].Text, nil
 }
-

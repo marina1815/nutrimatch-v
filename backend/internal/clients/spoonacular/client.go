@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ const (
 	maxResultCount          = 25
 	defaultSearchPath       = "/recipes/complexSearch"
 	defaultAutocompletePath = "/food/ingredients/autocomplete"
+	maxResponseBytes        = 2 << 20
 )
 
 var ErrUpstreamFailure = errors.New("spoonacular upstream failure")
@@ -132,7 +134,7 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		var payload map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&payload)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&payload)
 		return nil, &UpstreamError{
 			StatusCode: resp.StatusCode,
 			Body:       readUpstreamMessage(payload),
@@ -140,7 +142,7 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 	}
 
 	var out SearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -175,7 +177,7 @@ func (c *Client) AutocompleteIngredients(ctx context.Context, query string, numb
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		var payload map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&payload)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&payload)
 		return nil, &UpstreamError{
 			StatusCode: resp.StatusCode,
 			Body:       readUpstreamMessage(payload),
@@ -183,7 +185,7 @@ func (c *Client) AutocompleteIngredients(ctx context.Context, query string, numb
 	}
 
 	var out []IngredientSuggestion
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
 		return nil, err
 	}
 	return out, nil

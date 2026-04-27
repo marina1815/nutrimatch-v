@@ -7,6 +7,7 @@ type Session struct {
 	UserID           string     `gorm:"type:uuid;index;not null"`
 	AuthMethod       string     `gorm:"not null;default:'local'"`
 	RefreshTokenHash string     `gorm:"uniqueIndex;not null"`
+	CSRFBindingID    string     `gorm:"type:uuid;not null;default:gen_random_uuid()"`
 	ExpiresAt        time.Time  `gorm:"not null"`
 	IdleExpiresAt    time.Time  `gorm:"not null"`
 	CreatedAt        time.Time  `gorm:"not null;default:now()"`

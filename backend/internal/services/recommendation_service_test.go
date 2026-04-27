@@ -44,6 +44,13 @@ func (r *fakeUserRepository) UpdateFullName(_ context.Context, _ string, fullNam
 	return nil
 }
 
+func (r *fakeUserRepository) UpdatePasswordHash(_ context.Context, _ string, passwordHash string) error {
+	if r.user != nil {
+		r.user.PasswordHash = passwordHash
+	}
+	return nil
+}
+
 type fakeProfileRepository struct {
 	profile           *models.Profile
 	lifestyle         *models.Lifestyle
@@ -165,11 +172,16 @@ func (r *fakeSessionRepository) GetByID(_ context.Context, _ string) (*models.Se
 func (r *fakeSessionRepository) GetByRefreshHash(_ context.Context, _ string) (*models.Session, error) {
 	return nil, errors.New("not found")
 }
-func (r *fakeSessionRepository) Rotate(_ context.Context, _, _ string, _, _ time.Time) error {
+func (r *fakeSessionRepository) Rotate(_ context.Context, _, _, _, _ string, _, _ time.Time) error {
 	return nil
 }
 func (r *fakeSessionRepository) Touch(_ context.Context, _ string, _ time.Time) error { return nil }
 func (r *fakeSessionRepository) Revoke(_ context.Context, _ string) error             { return nil }
+func (r *fakeSessionRepository) RevokeForUser(_ context.Context, _, _ string) error   { return nil }
+func (r *fakeSessionRepository) RevokeOthers(_ context.Context, _, _ string) error    { return nil }
+func (r *fakeSessionRepository) ListByUser(_ context.Context, _ string, _ int) ([]models.Session, error) {
+	return nil, nil
+}
 
 type fakeTxManager struct {
 	called bool

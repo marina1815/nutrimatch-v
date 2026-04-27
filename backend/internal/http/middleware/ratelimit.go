@@ -26,11 +26,12 @@ func RateLimit(store repository.RateLimitBucketRepository) gin.HandlerFunc {
 		policy := ratePolicy(c)
 		allowed, err := bucketStore.TakeToken(c.Request.Context(), key, policy.BucketType, float64(policy.Limit), policy.Burst, time.Now())
 		if err != nil {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "rate limiter unavailable"})
+			abortError(c, http.StatusServiceUnavailable, "RATE_LIMITER_UNAVAILABLE", "rate limiter unavailable")
 			return
 		}
 		if !allowed {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit"})
+			c.Writer.Header().Set("Retry-After", "1")
+			abortError(c, http.StatusTooManyRequests, "RATE_LIMITED", "rate limit")
 			return
 		}
 		c.Next()
@@ -55,6 +56,20 @@ func ratePolicy(c *gin.Context) ratePolicyConfig {
 			BucketType: "auth_http_rate_limit",
 			Limit:      rate.Every(1500 * time.Millisecond),
 			Burst:      5,
+		}
+	}
+	if path == "/api/v1/recommendations/:profileId" {
+		return ratePolicyConfig{
+			BucketType: "recommendation_http_rate_limit",
+			Limit:      rate.Every(2 * time.Second),
+			Burst:      3,
+		}
+	}
+	if path == "/api/v1/profile/ingredients/suggest" {
+		return ratePolicyConfig{
+			BucketType: "ingredient_suggest_http_rate_limit",
+			Limit:      rate.Every(500 * time.Millisecond),
+			Burst:      8,
 		}
 	}
 	return ratePolicyConfig{

@@ -38,6 +38,10 @@ func (r *authTestUserRepository) UpdateFullName(_ context.Context, _, _ string) 
 	return nil
 }
 
+func (r *authTestUserRepository) UpdatePasswordHash(_ context.Context, _, _ string) error {
+	return nil
+}
+
 type authTestFailureRepository struct {
 	failures []models.AuthFailure
 }

@@ -29,6 +29,7 @@ type Config struct {
 	AuthMaxFailures    int
 	RefreshTokenPepper string
 	HealthDataKey      string
+	MFASecretKey       string
 
 	Argon2Time       uint32
 	Argon2Memory     uint32
@@ -73,6 +74,10 @@ type Config struct {
 	OIDCScopes             []string
 	OIDCProviderName       string
 	OIDCFrontendSuccessURL string
+
+	WebAuthnRPID          string
+	WebAuthnRPDisplayName string
+	WebAuthnOrigins       []string
 }
 
 func Load() *Config {
@@ -94,6 +99,7 @@ func Load() *Config {
 		AuthMaxFailures:    getEnvInt("AUTH_MAX_FAILURES", 5),
 		RefreshTokenPepper: getEnv("REFRESH_TOKEN_PEPPER", getEnv("JWT_SECRET", "")),
 		HealthDataKey:      getEnv("HEALTH_DATA_ENCRYPTION_KEY", ""),
+		MFASecretKey:       getEnv("MFA_SECRET_ENCRYPTION_KEY", getEnv("HEALTH_DATA_ENCRYPTION_KEY", "")),
 
 		Argon2Time:       uint32(getEnvInt("ARGON2_TIME", 2)),
 		Argon2Memory:     uint32(getEnvInt("ARGON2_MEMORY", 65536)),
@@ -138,6 +144,9 @@ func Load() *Config {
 		OIDCScopes:             parseCSV(getEnv("OIDC_SCOPES", "openid,profile,email")),
 		OIDCProviderName:       getEnv("OIDC_PROVIDER_NAME", "oidc"),
 		OIDCFrontendSuccessURL: getEnv("OIDC_FRONTEND_SUCCESS_URL", getEnv("FRONTEND_BASE_URL", "http://localhost:3000")+"/auth/oidc/callback"),
+		WebAuthnRPID:           getEnv("WEBAUTHN_RP_ID", "localhost"),
+		WebAuthnRPDisplayName:  getEnv("WEBAUTHN_RP_DISPLAY_NAME", "NutriMatch"),
+		WebAuthnOrigins:        parseCSV(getEnv("WEBAUTHN_ORIGINS", getEnv("FRONTEND_BASE_URL", "http://localhost:3000"))),
 	}
 
 	if cfg.DBURL == "" {
@@ -164,6 +173,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.HealthDataKey) != 32 {
 		problems = append(problems, "HEALTH_DATA_ENCRYPTION_KEY must be exactly 32 characters")
+	}
+	if len(c.MFASecretKey) != 32 {
+		problems = append(problems, "MFA_SECRET_ENCRYPTION_KEY must be exactly 32 characters")
 	}
 	if c.RefreshTokenPepper == c.JWTSecret {
 		problems = append(problems, "REFRESH_TOKEN_PEPPER must be distinct from JWT_SECRET")
@@ -247,6 +259,20 @@ func (c *Config) Validate() error {
 	if err := validateOrigin(c.FrontendBaseURL); err != nil {
 		problems = append(problems, "invalid FRONTEND_BASE_URL")
 	}
+	if c.WebAuthnRPID == "" {
+		problems = append(problems, "WEBAUTHN_RP_ID is required")
+	}
+	if c.WebAuthnRPDisplayName == "" {
+		problems = append(problems, "WEBAUTHN_RP_DISPLAY_NAME is required")
+	}
+	if len(c.WebAuthnOrigins) == 0 {
+		problems = append(problems, "WEBAUTHN_ORIGINS must include at least one origin")
+	}
+	for _, origin := range c.WebAuthnOrigins {
+		if err := validateOrigin(origin); err != nil {
+			problems = append(problems, "invalid WEBAUTHN_ORIGINS entry")
+		}
+	}
 	if err := validateExternalURL("SPOONACULAR_BASE_URL", c.SpoonacularBaseURL); err != nil {
 		problems = append(problems, err.Error())
 	}
@@ -286,8 +312,14 @@ func (c *Config) Validate() error {
 		if !c.CookieSecure {
 			problems = append(problems, "COOKIE_SECURE must be true in production")
 		}
+		if strings.TrimSpace(c.SpoonacularAPIKey) == "" {
+			problems = append(problems, "SPOONACULAR_API_KEY is required in production")
+		}
 		if isInsecureDatabaseURL(c.DBURL) {
 			problems = append(problems, "DATABASE_URL must enforce TLS in production")
+		}
+		if c.MFASecretKey == c.HealthDataKey {
+			problems = append(problems, "MFA_SECRET_ENCRYPTION_KEY must be distinct from HEALTH_DATA_ENCRYPTION_KEY in production")
 		}
 		for _, origin := range c.TrustedOrigins {
 			if !strings.HasPrefix(origin, "https://") {

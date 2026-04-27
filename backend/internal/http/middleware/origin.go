@@ -23,20 +23,20 @@ func RequireTrustedOrigin(trustedOrigins []string) gin.HandlerFunc {
 					c.Next()
 					return
 				}
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "missing trusted origin"})
+				abortError(c, http.StatusForbidden, "MISSING_TRUSTED_ORIGIN", "missing trusted origin")
 				return
 			}
 
 			parsed, err := url.Parse(referer)
 			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "invalid origin"})
+				abortError(c, http.StatusForbidden, "INVALID_ORIGIN", "invalid origin")
 				return
 			}
 			origin = parsed.Scheme + "://" + parsed.Host
 		}
 
 		if _, ok := allowed[origin]; !ok {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin not allowed"})
+			abortError(c, http.StatusForbidden, "ORIGIN_NOT_ALLOWED", "origin not allowed")
 			return
 		}
 

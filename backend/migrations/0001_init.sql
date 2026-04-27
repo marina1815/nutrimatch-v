@@ -49,6 +49,35 @@ CREATE TABLE IF NOT EXISTS identity.sessions (
     CHECK (idle_expires_at <= expires_at)
 );
 
+CREATE TABLE IF NOT EXISTS identity.totp_secrets (
+    user_id uuid PRIMARY KEY REFERENCES identity.users(id) ON DELETE CASCADE,
+    secret_ciphertext text NOT NULL,
+    enabled boolean NOT NULL DEFAULT false,
+    confirmed_at timestamptz NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS identity.webauthn_credentials (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    credential_id text NOT NULL UNIQUE,
+    credential_json jsonb NOT NULL DEFAULT '{}',
+    display_name text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity.webauthn_challenges (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    kind text NOT NULL CHECK (kind IN ('registration', 'authentication')),
+    session_data jsonb NOT NULL DEFAULT '{}',
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS catalog.ingredients (
     key text PRIMARY KEY,
     display_name text NOT NULL,
@@ -138,7 +167,7 @@ CREATE TABLE IF NOT EXISTS catalog.spoonacular_param_map (
 CREATE TABLE IF NOT EXISTS catalog.medical_rules (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     code text NOT NULL UNIQUE,
-    condition_key text NOT NULL DEFAULT '' REFERENCES catalog.conditions(key) ON DELETE RESTRICT,
+    condition_key text NOT NULL DEFAULT '',
     medication_pattern text NOT NULL DEFAULT '',
     blocked_ingredients jsonb NOT NULL DEFAULT '[]',
     blocked_tags jsonb NOT NULL DEFAULT '[]',
@@ -394,8 +423,17 @@ CREATE TABLE IF NOT EXISTS security.audit_events (
     request_id text NOT NULL DEFAULT '',
     details jsonb NOT NULL DEFAULT '{}',
     external_trace jsonb NOT NULL DEFAULT '{}',
+    previous_hash text NOT NULL DEFAULT '',
+    event_hash text NOT NULL UNIQUE,
     occurred_at timestamptz NOT NULL DEFAULT now(),
     created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS security.audit_policies (
+    key text PRIMARY KEY,
+    value text NOT NULL,
+    description text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS security.auth_failures (
@@ -417,6 +455,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON identity.sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_refresh_hash ON identity.sessions(refresh_token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_idle_expires_at ON identity.sessions(idle_expires_at);
 CREATE INDEX IF NOT EXISTS idx_external_identities_user_id ON identity.external_identities(user_id);
+CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_user_id ON identity.webauthn_credentials(user_id);
+CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_user_kind ON identity.webauthn_challenges(user_id, kind, expires_at);
 CREATE INDEX IF NOT EXISTS idx_ingredient_aliases_key ON catalog.ingredient_aliases(ingredient_key);
 CREATE INDEX IF NOT EXISTS idx_intolerance_aliases_key ON catalog.intolerance_aliases(intolerance_key);
 CREATE INDEX IF NOT EXISTS idx_condition_aliases_key ON catalog.condition_aliases(condition_key);
@@ -437,9 +477,13 @@ CREATE INDEX IF NOT EXISTS idx_search_response_cache_expires_at ON recommendatio
 CREATE INDEX IF NOT EXISTS idx_ingredient_resolution_cache_expires_at ON recommendation.ingredient_resolution_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_profile_embeddings_profile_id ON recommendation.profile_embeddings(profile_id);
 CREATE INDEX IF NOT EXISTS idx_recipe_embeddings_recipe_id ON recommendation.recipe_embeddings(external_recipe_id);
+CREATE INDEX IF NOT EXISTS idx_profile_embeddings_vector_cosine ON recommendation.profile_embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_recipe_embeddings_vector_cosine ON recommendation.recipe_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON security.audit_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON security.audit_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_events_request_id ON security.audit_events(request_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_event_hash ON security.audit_events(event_hash);
+CREATE INDEX IF NOT EXISTS idx_audit_events_occurred_at ON security.audit_events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_auth_failures_email_hash ON security.auth_failures(email_hash);
 CREATE INDEX IF NOT EXISTS idx_auth_failures_ip_hash ON security.auth_failures(ip_hash);
 
@@ -617,9 +661,16 @@ INSERT INTO catalog.medical_rules (
     )
 ON CONFLICT (code) DO NOTHING;
 
+INSERT INTO security.audit_policies (key, value, description) VALUES
+    ('retention_days', '365', 'Minimum retention for security audit events before archival review.'),
+    ('hash_chain', 'sha256_previous_hash', 'Every event is chained to the previous event hash for tamper evidence.'),
+    ('pii_strategy', 'fingerprint_ip_user_agent', 'Network identifiers are fingerprinted before persistence.')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, description = EXCLUDED.description, updated_at = now();
+
 -- +goose Down
 DROP TABLE IF EXISTS security.rate_limit_buckets;
 DROP TABLE IF EXISTS security.auth_failures;
+DROP TABLE IF EXISTS security.audit_policies;
 DROP TABLE IF EXISTS security.audit_events;
 DROP TABLE IF EXISTS recommendation.recipe_embeddings;
 DROP TABLE IF EXISTS recommendation.profile_embeddings;
@@ -653,6 +704,9 @@ DROP TABLE IF EXISTS catalog.intolerance_aliases;
 DROP TABLE IF EXISTS catalog.intolerances;
 DROP TABLE IF EXISTS catalog.ingredient_aliases;
 DROP TABLE IF EXISTS catalog.ingredients;
+DROP TABLE IF EXISTS identity.webauthn_challenges;
+DROP TABLE IF EXISTS identity.webauthn_credentials;
+DROP TABLE IF EXISTS identity.totp_secrets;
 DROP TABLE IF EXISTS identity.sessions;
 DROP TABLE IF EXISTS identity.external_identities;
 DROP TABLE IF EXISTS identity.users;

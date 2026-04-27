@@ -6,6 +6,8 @@ const ACCESS_TOKEN_KEY = "nutrimatch-access-token";
 const PROFILE_DRAFT_KEY = "nutrimatch-profile-draft";
 const PROFILE_ID_KEY = "nutrimatch-profile-id";
 
+let accessTokenMemory: string | null = null;
+
 function getSessionStorage(): Storage | null {
   if (typeof window === "undefined") {
     return null;
@@ -15,14 +17,16 @@ function getSessionStorage(): Storage | null {
 }
 
 export function getAccessToken(): string | null {
-  return getSessionStorage()?.getItem(ACCESS_TOKEN_KEY) ?? null;
+  return accessTokenMemory;
 }
 
 export function setAccessToken(token: string): void {
-  getSessionStorage()?.setItem(ACCESS_TOKEN_KEY, token);
+  accessTokenMemory = token;
+  getSessionStorage()?.removeItem(ACCESS_TOKEN_KEY);
 }
 
 export function clearAccessToken(): void {
+  accessTokenMemory = null;
   getSessionStorage()?.removeItem(ACCESS_TOKEN_KEY);
 }
 
