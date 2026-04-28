@@ -31,6 +31,10 @@ func NewCipher(secret string) (*Cipher, error) {
 }
 
 func (c *Cipher) Encrypt(plaintext string) (string, error) {
+	return c.EncryptScoped("", plaintext)
+}
+
+func (c *Cipher) EncryptScoped(scope, plaintext string) (string, error) {
 	if plaintext == "" {
 		return "", nil
 	}
@@ -39,11 +43,15 @@ func (c *Cipher) Encrypt(plaintext string) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-	ciphertext := c.aead.Seal(nonce, nonce, []byte(plaintext), nil)
+	ciphertext := c.aead.Seal(nonce, nonce, []byte(plaintext), []byte(scope))
 	return base64.RawURLEncoding.EncodeToString(ciphertext), nil
 }
 
 func (c *Cipher) Decrypt(ciphertext string) (string, error) {
+	return c.DecryptScoped("", ciphertext)
+}
+
+func (c *Cipher) DecryptScoped(scope, ciphertext string) (string, error) {
 	if ciphertext == "" {
 		return "", nil
 	}
@@ -57,7 +65,7 @@ func (c *Cipher) Decrypt(ciphertext string) (string, error) {
 	}
 	nonce := raw[:c.aead.NonceSize()]
 	payload := raw[c.aead.NonceSize():]
-	plaintext, err := c.aead.Open(nil, nonce, payload, nil)
+	plaintext, err := c.aead.Open(nil, nonce, payload, []byte(scope))
 	if err != nil {
 		return "", err
 	}

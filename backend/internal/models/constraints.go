@@ -12,6 +12,7 @@ type Constraints struct {
 	ChronicDiseases     StringSlice `gorm:"-"`
 	TakesMedication     bool        `gorm:"not null"`
 	Medications         string      `gorm:"not null"`
+	MedicationsIndex    string      `gorm:"not null;default:''"`
 	CreatedAt           time.Time   `gorm:"not null;default:now()"`
 	UpdatedAt           time.Time   `gorm:"not null;default:now()"`
 }

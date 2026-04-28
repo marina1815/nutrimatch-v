@@ -42,6 +42,10 @@ func (r *authTestUserRepository) UpdatePasswordHash(_ context.Context, _, _ stri
 	return nil
 }
 
+func (r *authTestUserRepository) UpdatePreferredMFAMethod(_ context.Context, _, _ string) error {
+	return nil
+}
+
 type authTestFailureRepository struct {
 	failures []models.AuthFailure
 }

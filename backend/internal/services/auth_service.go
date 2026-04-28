@@ -79,30 +79,39 @@ func (s *AuthService) Register(ctx context.Context, user *models.User, rawPasswo
 }
 
 func (s *AuthService) Login(ctx context.Context, email, rawPassword, userAgent, ip string) (string, time.Time, string, time.Time, error) {
+	user, err := s.AuthenticatePrimary(ctx, email, rawPassword, ip)
+	if err != nil {
+		return "", time.Time{}, "", time.Time{}, err
+	}
+
+	return s.createSession(ctx, s.Sessions, user.ID, "local", userAgent, ip)
+}
+
+func (s *AuthService) AuthenticatePrimary(ctx context.Context, email, rawPassword, ip string) (*models.User, error) {
 	emailHash := security.HashFingerprint(email)
 	ipHash := security.HashFingerprint(ip)
 	blocked, err := s.isTemporarilyBlocked(ctx, emailHash, ipHash)
 	if err != nil {
-		return "", time.Time{}, "", time.Time{}, err
+		return nil, err
 	}
 	if blocked {
-		return "", time.Time{}, "", time.Time{}, ErrAuthTemporarilyBlocked
+		return nil, ErrAuthTemporarilyBlocked
 	}
 
 	user, err := s.Users.GetByEmail(ctx, email)
 	if err != nil {
 		s.consumeDummyVerification(rawPassword)
 		_ = s.recordFailure(ctx, emailHash, ipHash, "invalid_credentials")
-		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 
 	valid, verifyErr := security.VerifyPassword(rawPassword, user.PasswordHash)
 	if verifyErr != nil || !valid {
 		_ = s.recordFailure(ctx, emailHash, ipHash, "invalid_credentials")
-		return "", time.Time{}, "", time.Time{}, ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 
-	return s.createSession(ctx, s.Sessions, user.ID, "local", userAgent, ip)
+	return user, nil
 }
 
 func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string, time.Time, string, time.Time, error) {

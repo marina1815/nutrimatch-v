@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/marina1815/nutrimatch/internal/security"
+	"golang.org/x/time/rate"
 )
 
 var ErrCircuitOpen = errors.New("spoonacular circuit breaker open")
@@ -26,6 +27,7 @@ type ResilientSearcher struct {
 	Cache         *security.TTLCache[*SearchResponse]
 	Persistent    PersistentCache
 	PersistentTTL time.Duration
+	Limiter       *rate.Limiter
 	MaxRetries    int
 	RetryDelay    time.Duration
 
@@ -64,6 +66,11 @@ func (s *ResilientSearcher) Search(ctx context.Context, opts SearchOptions) (*Se
 	}
 	if s.isCircuitOpen() {
 		return nil, ErrCircuitOpen
+	}
+	if s.Limiter != nil {
+		if err := s.Limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	attempts := s.MaxRetries + 1

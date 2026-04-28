@@ -11,7 +11,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -29,6 +32,11 @@ type Client struct {
 	BaseURL string
 	APIKey  string
 	HTTP    *http.Client
+	Limiter *rate.Limiter
+
+	MaxConcurrent int
+	mu            sync.Mutex
+	concurrency   chan struct{}
 }
 
 type SearchOptions struct {
@@ -115,6 +123,16 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) (*SearchRespons
 	if err != nil {
 		return nil, err
 	}
+	if c.Limiter != nil {
+		if err := c.Limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+	release, err := c.acquireConcurrency(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -158,6 +176,16 @@ func (c *Client) AutocompleteIngredients(ctx context.Context, query string, numb
 	if err != nil {
 		return nil, err
 	}
+	if c.Limiter != nil {
+		if err := c.Limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+	release, err := c.acquireConcurrency(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -327,4 +355,25 @@ func readUpstreamMessage(payload map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func (c *Client) acquireConcurrency(ctx context.Context) (func(), error) {
+	limit := c.MaxConcurrent
+	if limit <= 0 {
+		return func() {}, nil
+	}
+
+	c.mu.Lock()
+	if c.concurrency == nil || cap(c.concurrency) != limit {
+		c.concurrency = make(chan struct{}, limit)
+	}
+	sem := c.concurrency
+	c.mu.Unlock()
+
+	select {
+	case sem <- struct{}{}:
+		return func() { <-sem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }

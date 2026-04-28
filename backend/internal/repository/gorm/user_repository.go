@@ -2,9 +2,12 @@ package gormrepo
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/marina1815/nutrimatch/internal/models"
+	"github.com/marina1815/nutrimatch/internal/repository"
 	"gorm.io/gorm"
 )
 
@@ -17,7 +20,16 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 }
 
 func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
-	return r.db.WithContext(ctx).Create(user).Error
+	err := r.db.WithContext(ctx).Create(user).Error
+	if isUniqueViolation(err) {
+		return repository.ErrDuplicate
+	}
+	return err
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.User, error) {
@@ -44,5 +56,12 @@ func (r *UserRepository) UpdatePasswordHash(ctx context.Context, userID, passwor
 	return r.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", userID).Updates(map[string]any{
 		"password_hash": passwordHash,
 		"updated_at":    time.Now(),
+	}).Error
+}
+
+func (r *UserRepository) UpdatePreferredMFAMethod(ctx context.Context, userID, method string) error {
+	return r.db.WithContext(ctx).Model(&models.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"preferred_mfa_method": method,
+		"updated_at":           time.Now(),
 	}).Error
 }

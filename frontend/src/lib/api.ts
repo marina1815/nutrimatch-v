@@ -29,11 +29,25 @@ type AuthResponse = {
   expires_at: string;
 };
 
+type MfaChallengeResponse = {
+  mfa_required: true;
+  challenge_id: string;
+  preferred_method: "totp" | "passkey";
+  allowed_methods: Array<"totp" | "passkey">;
+  expires_at: string;
+};
+
+function isMfaChallengeResponse(value: AuthResponse | MfaChallengeResponse): value is MfaChallengeResponse {
+  return "mfa_required" in value && value.mfa_required === true;
+}
+
 export type MfaStatus = {
   totpEnabled: boolean;
   passkeyEnabled: boolean;
   passkeyCount: number;
   stepUpAvailable: boolean;
+  preferredMethod: "" | "totp" | "passkey";
+  effectiveMethod: "" | "totp" | "passkey";
 };
 
 type TotpSetupResponse = {
@@ -242,8 +256,24 @@ async function apiRequest<T>(
 }
 
 export async function loginUser(payload: { email: string; password: string }) {
-  const response = await apiRequest<AuthResponse>(
+  const response = await apiRequest<AuthResponse | MfaChallengeResponse>(
     "/api/v1/auth/login",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    { csrf: true },
+  );
+
+  if (!isMfaChallengeResponse(response)) {
+    setAccessToken(response.access_token);
+  }
+  return response;
+}
+
+export async function completeTotpLogin(payload: { challengeId: string; code: string }) {
+  const response = await apiRequest<AuthResponse>(
+    "/api/v1/auth/mfa/login/totp",
     {
       method: "POST",
       body: JSON.stringify(payload),
@@ -307,6 +337,17 @@ export async function getMfaStatus() {
       method: "GET",
     },
     { auth: true },
+  );
+}
+
+export async function setMfaPreference(preferredMethod: "" | "totp" | "passkey") {
+  return apiRequest<void>(
+    "/api/v1/auth/mfa/preference",
+    {
+      method: "POST",
+      body: JSON.stringify({ preferredMethod }),
+    },
+    { auth: true, csrf: true },
   );
 }
 
@@ -395,6 +436,35 @@ export async function verifyPasskey() {
     },
     { auth: true, csrf: true },
   );
+}
+
+export async function beginLoginPasskey(challengeId: string) {
+  return apiRequest<PasskeyOptionsResponse>(
+    "/api/v1/auth/mfa/login/passkeys/options",
+    {
+      method: "POST",
+      body: JSON.stringify({ challengeId }),
+    },
+    { csrf: true },
+  );
+}
+
+export async function finishLoginPasskey(challengeId: string, passkeyChallengeId: string, credential: PublicKeyCredential) {
+  const params = new URLSearchParams({
+    challengeId,
+    passkeyChallengeId,
+  });
+  const response = await apiRequest<AuthResponse>(
+    `/api/v1/auth/mfa/login/passkeys/finish?${params.toString()}`,
+    {
+      method: "POST",
+      body: JSON.stringify(publicKeyCredentialToJSON(credential)),
+    },
+    { csrf: true },
+  );
+
+  setAccessToken(response.access_token);
+  return response;
 }
 
 export async function submitProfile(profile: UserProfile) {

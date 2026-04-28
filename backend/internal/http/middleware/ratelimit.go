@@ -51,7 +51,12 @@ func rateKey(c *gin.Context) string {
 
 func ratePolicy(c *gin.Context) ratePolicyConfig {
 	path := c.FullPath()
-	if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" || path == "/api/v1/auth/refresh" {
+	if path == "/api/v1/auth/login" ||
+		path == "/api/v1/auth/register" ||
+		path == "/api/v1/auth/refresh" ||
+		path == "/api/v1/auth/mfa/login/totp" ||
+		path == "/api/v1/auth/mfa/login/passkeys/options" ||
+		path == "/api/v1/auth/mfa/login/passkeys/finish" {
 		return ratePolicyConfig{
 			BucketType: "auth_http_rate_limit",
 			Limit:      rate.Every(1500 * time.Millisecond),
@@ -61,8 +66,8 @@ func ratePolicy(c *gin.Context) ratePolicyConfig {
 	if path == "/api/v1/recommendations/:profileId" {
 		return ratePolicyConfig{
 			BucketType: "recommendation_http_rate_limit",
-			Limit:      rate.Every(2 * time.Second),
-			Burst:      3,
+			Limit:      rate.Every(500 * time.Millisecond),
+			Burst:      12,
 		}
 	}
 	if path == "/api/v1/profile/ingredients/suggest" {

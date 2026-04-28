@@ -7,12 +7,16 @@ const csp = [
   `connect-src 'self' ${apiURL}`,
   "img-src 'self' data: blob:",
   "font-src 'self'",
+  "media-src 'none'",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
-  "style-src 'self' 'unsafe-inline'",
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+  "manifest-src 'self'",
+  "worker-src 'self' blob:",
+  "style-src 'self'",
+  `script-src 'self'${isDev ? " 'unsafe-inline' 'unsafe-eval'" : ""}`,
+  ...(isDev ? [] : ["require-trusted-types-for 'script'"]),
   ...(isDev ? [] : ["upgrade-insecure-requests"]),
 ].join("; ");
 

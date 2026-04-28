@@ -113,7 +113,7 @@ export default function ResultsPage() {
 
         {trace && (
           <div className="nm-card nm-aux-card">
-            <h2 className="nm-title" style={{ fontSize: "1.35rem" }}>Recommendation trace</h2>
+            <h2 className="nm-title nm-section-title-compact">Recommendation trace</h2>
             <div className="nm-trace-grid">
               <div className="nm-keyval">
                 <span className="nm-muted">Status</span>

@@ -49,13 +49,7 @@ func (s *AuditService) Record(ctx context.Context, record AuditRecord) error {
 	}
 
 	occurredAt := time.Now().UTC()
-	previousHash, err := s.Repo.LatestHash(ctx)
-	if err != nil {
-		return err
-	}
-	eventHash := hashAuditRecord(previousHash, occurredAt, record)
-
-	return s.Repo.Create(ctx, &models.AuditEvent{
+	event := &models.AuditEvent{
 		UserID:        record.UserID,
 		SessionID:     record.SessionID,
 		EventType:     record.EventType,
@@ -67,9 +61,10 @@ func (s *AuditService) Record(ctx context.Context, record AuditRecord) error {
 		RequestID:     record.RequestID,
 		Details:       models.JSONMap(record.Details),
 		ExternalTrace: models.JSONMap(record.ExternalTrace),
-		PreviousHash:  previousHash,
-		EventHash:     eventHash,
 		OccurredAt:    occurredAt,
+	}
+	return s.Repo.AppendChained(ctx, event, func(previousHash string, occurredAt time.Time) string {
+		return hashAuditRecord(previousHash, occurredAt, record)
 	})
 }
 

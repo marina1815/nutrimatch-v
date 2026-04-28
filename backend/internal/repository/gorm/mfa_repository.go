@@ -91,3 +91,34 @@ func (r *MFARepository) ConsumeWebAuthnChallenge(ctx context.Context, userID, ch
 	}
 	return &challenge, nil
 }
+
+func (r *MFARepository) CreateMFALoginChallenge(ctx context.Context, challenge *models.MFALoginChallenge) error {
+	return r.db.WithContext(ctx).Create(challenge).Error
+}
+
+func (r *MFARepository) GetMFALoginChallenge(ctx context.Context, challengeID string, now time.Time) (*models.MFALoginChallenge, error) {
+	var challenge models.MFALoginChallenge
+	err := r.db.WithContext(ctx).
+		Where("id = ? AND consumed_at IS NULL AND expires_at > ?", challengeID, now).
+		First(&challenge).Error
+	if err != nil {
+		return nil, err
+	}
+	return &challenge, nil
+}
+
+func (r *MFARepository) ConsumeMFALoginChallenge(ctx context.Context, challengeID string, now time.Time) (*models.MFALoginChallenge, error) {
+	var challenge models.MFALoginChallenge
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND consumed_at IS NULL AND expires_at > ?", challengeID, now).
+			First(&challenge).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.MFALoginChallenge{}).Where("id = ?", challenge.ID).Update("consumed_at", now).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &challenge, nil
+}

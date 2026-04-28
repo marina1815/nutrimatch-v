@@ -91,7 +91,7 @@ export default function RegisterPage() {
   })();
 
   const strengthLabel = ["", "Weak", "Fair", "Good", "Strong"][strength];
-  const strengthColor = ["", "#f87171", "#fbbf24", "#60a5fa", "#4ade80"][strength];
+  const strengthClass = strength > 0 ? `strength-${strength}` : "";
 
   return (
     <main className="page">
@@ -150,12 +150,11 @@ export default function RegisterPage() {
                   {[1, 2, 3, 4].map((index) => (
                     <div
                       key={index}
-                      className="strength-seg"
-                      style={{ background: index <= strength ? strengthColor : "var(--border)" }}
+                      className={`strength-seg ${index <= strength ? strengthClass : ""}`}
                     />
                   ))}
                 </div>
-                <span className="strength-label" style={{ color: strengthColor }}>{strengthLabel}</span>
+                <span className={`strength-label ${strengthClass}`}>{strengthLabel}</span>
               </div>
             )}
             {errors.password && <span className="error">{errors.password}</span>}
@@ -193,85 +192,6 @@ export default function RegisterPage() {
           <Link href="/login" className="switch-link">Sign in</Link>
         </p>
       </div>
-
-      <style>{`
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        :root {
-          --bg: #0a0f0a; --surface: #111811; --border: #1e2b1e;
-          --green: #4ade80; --green-dim: #166534; --green-glow: rgba(74,222,128,0.1);
-          --text: #f0fdf0; --muted: #6b7c6b; --error: #f87171;
-          --font-display: 'Georgia', serif;
-          --font-body: 'Helvetica Neue', Helvetica, sans-serif;
-        }
-        body { background: var(--bg); color: var(--text); font-family: var(--font-body); }
-
-        .page {
-          min-height: 100vh; display: flex; align-items: center; justify-content: center;
-          padding: 2rem;
-          background: radial-gradient(ellipse at 40% 30%, rgba(74,222,128,0.06) 0%, transparent 60%);
-        }
-        .card {
-          width: 100%; max-width: 440px;
-          background: var(--surface); border: 1px solid var(--border);
-          border-radius: 16px; padding: 2.5rem;
-          display: flex; flex-direction: column; gap: 1.5rem;
-          animation: fadeUp 0.5s ease both;
-        }
-        .logo { font-family: 'Georgia', serif; font-size: 1.2rem; color: var(--green); text-decoration: none; width: fit-content; }
-        .title { font-family: 'Georgia', serif; font-size: 1.8rem; color: var(--text); }
-        .sub { font-size: 0.88rem; color: var(--muted); margin-top: -1rem; }
-
-        .form { display: flex; flex-direction: column; gap: 1.25rem; }
-        .field { display: flex; flex-direction: column; gap: 0.4rem; }
-        .label { font-size: 0.82rem; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
-
-        .input {
-          background: var(--bg); border: 1px solid var(--border);
-          border-radius: 8px; padding: 0.65rem 0.9rem;
-          color: var(--text); font-size: 0.92rem; font-family: var(--font-body);
-          outline: none; transition: border-color 0.2s, box-shadow 0.2s; width: 100%;
-        }
-        .input::placeholder { color: var(--muted); }
-        .input:focus { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-glow); }
-        .input-error { border-color: var(--error) !important; }
-        .error { font-size: 0.78rem; color: var(--error); }
-
-        .strength-row { display: flex; align-items: center; gap: 0.75rem; }
-        .strength-bar { display: flex; gap: 4px; flex: 1; }
-        .strength-seg { height: 3px; flex: 1; border-radius: 99px; transition: background 0.3s; }
-        .strength-label { font-size: 0.75rem; font-weight: 600; min-width: 40px; }
-
-        .terms {
-          font-size: 0.75rem; color: var(--muted); line-height: 1.6;
-          border-left: 2px solid var(--border); padding-left: 0.75rem;
-        }
-
-        .btn {
-          background: var(--green); color: #0a0f0a;
-          border: none; border-radius: 8px; padding: 0.8rem;
-          font-size: 0.95rem; font-weight: 700; cursor: pointer;
-          transition: opacity 0.2s, transform 0.2s; margin-top: 0.25rem;
-          display: flex; align-items: center; justify-content: center; min-height: 44px;
-        }
-        .btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-        .spinner {
-          width: 18px; height: 18px; border: 2px solid #0a0f0a;
-          border-top-color: transparent; border-radius: 50%;
-          animation: spin 0.7s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        .switch { font-size: 0.85rem; color: var(--muted); text-align: center; }
-        .switch-link { color: var(--green); text-decoration: none; font-weight: 600; }
-        .switch-link:hover { text-decoration: underline; }
-
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </main>
   );
 }

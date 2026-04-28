@@ -42,3 +42,19 @@ type WebAuthnChallenge struct {
 func (WebAuthnChallenge) TableName() string {
 	return "identity.webauthn_challenges"
 }
+
+type MFALoginChallenge struct {
+	ID              string      `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
+	UserID          string      `gorm:"type:uuid;index;not null"`
+	PreferredMethod string      `gorm:"not null;default:''"`
+	AllowedMethods  StringSlice `gorm:"type:jsonb;not null;default:'[]'"`
+	ExpiresAt       time.Time   `gorm:"not null"`
+	ConsumedAt      *time.Time  `gorm:"default:null"`
+	UserAgentHash   string      `gorm:"not null;default:''"`
+	IPHash          string      `gorm:"not null;default:''"`
+	CreatedAt       time.Time   `gorm:"not null;default:now()"`
+}
+
+func (MFALoginChallenge) TableName() string {
+	return "identity.mfa_login_challenges"
+}

@@ -14,10 +14,16 @@ import (
 )
 
 type Config struct {
-	AppEnv         string
-	AppPort        string
-	DBURL          string
-	BodyLimitBytes int64
+	AppEnv                           string
+	AppPort                          string
+	DBURL                            string
+	BodyLimitBytes                   int64
+	AuditRetentionDays               int
+	AuthFailureRetentionDays         int
+	RateLimitBucketRetentionHours    int
+	SessionRetentionDays             int
+	RecommendationTraceRetentionDays int
+	CacheRetentionHours              int
 
 	JWTSecret          string
 	JWTIssuer          string
@@ -30,6 +36,7 @@ type Config struct {
 	RefreshTokenPepper string
 	HealthDataKey      string
 	MFASecretKey       string
+	BlindIndexKey      string
 
 	Argon2Time       uint32
 	Argon2Memory     uint32
@@ -52,6 +59,8 @@ type Config struct {
 	TrustedOrigins  []string
 	TrustedProxies  []string
 	FrontendBaseURL string
+	RedisURL        string
+	RateLimitStore  string
 
 	NutritionAPIBaseURL string
 	NutritionAPIKey     string
@@ -84,10 +93,16 @@ func Load() *Config {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		AppEnv:         getEnv("APP_ENV", "development"),
-		AppPort:        getEnv("APP_PORT", "8080"),
-		DBURL:          getEnv("DATABASE_URL", ""),
-		BodyLimitBytes: getEnvInt64("BODY_LIMIT_BYTES", 1048576),
+		AppEnv:                           getEnv("APP_ENV", "development"),
+		AppPort:                          getEnv("APP_PORT", "8080"),
+		DBURL:                            getEnv("DATABASE_URL", ""),
+		BodyLimitBytes:                   getEnvInt64("BODY_LIMIT_BYTES", 1048576),
+		AuditRetentionDays:               getEnvInt("AUDIT_RETENTION_DAYS", 365),
+		AuthFailureRetentionDays:         getEnvInt("AUTH_FAILURE_RETENTION_DAYS", 30),
+		RateLimitBucketRetentionHours:    getEnvInt("RATE_LIMIT_BUCKET_RETENTION_HOURS", 24),
+		SessionRetentionDays:             getEnvInt("SESSION_RETENTION_DAYS", 30),
+		RecommendationTraceRetentionDays: getEnvInt("RECOMMENDATION_TRACE_RETENTION_DAYS", 90),
+		CacheRetentionHours:              getEnvInt("CACHE_RETENTION_HOURS", 24),
 
 		JWTSecret:          getEnv("JWT_SECRET", ""),
 		JWTIssuer:          getEnv("JWT_ISSUER", "nutrimatch"),
@@ -100,6 +115,7 @@ func Load() *Config {
 		RefreshTokenPepper: getEnv("REFRESH_TOKEN_PEPPER", getEnv("JWT_SECRET", "")),
 		HealthDataKey:      getEnv("HEALTH_DATA_ENCRYPTION_KEY", ""),
 		MFASecretKey:       getEnv("MFA_SECRET_ENCRYPTION_KEY", getEnv("HEALTH_DATA_ENCRYPTION_KEY", "")),
+		BlindIndexKey:      getEnv("SENSITIVE_DATA_INDEX_KEY", getEnv("HEALTH_DATA_ENCRYPTION_KEY", "")),
 
 		Argon2Time:       uint32(getEnvInt("ARGON2_TIME", 2)),
 		Argon2Memory:     uint32(getEnvInt("ARGON2_MEMORY", 65536)),
@@ -122,6 +138,8 @@ func Load() *Config {
 		TrustedOrigins:  parseCSV(getEnv("TRUSTED_ORIGINS", getEnv("CORS_ORIGINS", "http://localhost:3000"))),
 		TrustedProxies:  parseCSV(getEnv("TRUSTED_PROXIES", "")),
 		FrontendBaseURL: getEnv("FRONTEND_BASE_URL", "http://localhost:3000"),
+		RedisURL:        getEnv("REDIS_URL", ""),
+		RateLimitStore:  strings.ToLower(strings.TrimSpace(getEnv("RATE_LIMIT_STORE", "postgres"))),
 
 		NutritionAPIBaseURL: getEnv("NUTRITION_API_BASE_URL", ""),
 		NutritionAPIKey:     getEnv("NUTRITION_API_KEY", ""),
@@ -177,6 +195,9 @@ func (c *Config) Validate() error {
 	if len(c.MFASecretKey) != 32 {
 		problems = append(problems, "MFA_SECRET_ENCRYPTION_KEY must be exactly 32 characters")
 	}
+	if len(c.BlindIndexKey) < 32 {
+		problems = append(problems, "SENSITIVE_DATA_INDEX_KEY must be at least 32 characters")
+	}
 	if c.RefreshTokenPepper == c.JWTSecret {
 		problems = append(problems, "REFRESH_TOKEN_PEPPER must be distinct from JWT_SECRET")
 	}
@@ -219,6 +240,24 @@ func (c *Config) Validate() error {
 	if c.BodyLimitBytes < 1024 || c.BodyLimitBytes > 2*1024*1024 {
 		problems = append(problems, "BODY_LIMIT_BYTES must be between 1024 and 2097152")
 	}
+	if c.AuditRetentionDays < 90 || c.AuditRetentionDays > 3650 {
+		problems = append(problems, "AUDIT_RETENTION_DAYS must be between 90 and 3650")
+	}
+	if c.AuthFailureRetentionDays < 1 || c.AuthFailureRetentionDays > 365 {
+		problems = append(problems, "AUTH_FAILURE_RETENTION_DAYS must be between 1 and 365")
+	}
+	if c.RateLimitBucketRetentionHours < 1 || c.RateLimitBucketRetentionHours > 168 {
+		problems = append(problems, "RATE_LIMIT_BUCKET_RETENTION_HOURS must be between 1 and 168")
+	}
+	if c.SessionRetentionDays < 1 || c.SessionRetentionDays > 365 {
+		problems = append(problems, "SESSION_RETENTION_DAYS must be between 1 and 365")
+	}
+	if c.RecommendationTraceRetentionDays < 7 || c.RecommendationTraceRetentionDays > 730 {
+		problems = append(problems, "RECOMMENDATION_TRACE_RETENTION_DAYS must be between 7 and 730")
+	}
+	if c.CacheRetentionHours < 1 || c.CacheRetentionHours > 168 {
+		problems = append(problems, "CACHE_RETENTION_HOURS must be between 1 and 168")
+	}
 	if c.CookieNameRefresh == "" {
 		problems = append(problems, "COOKIE_NAME_REFRESH is required")
 	}
@@ -259,6 +298,18 @@ func (c *Config) Validate() error {
 	if err := validateOrigin(c.FrontendBaseURL); err != nil {
 		problems = append(problems, "invalid FRONTEND_BASE_URL")
 	}
+	switch c.RateLimitStore {
+	case "postgres", "redis":
+	default:
+		problems = append(problems, "RATE_LIMIT_STORE must be postgres or redis")
+	}
+	if c.RateLimitStore == "redis" {
+		if strings.TrimSpace(c.RedisURL) == "" {
+			problems = append(problems, "REDIS_URL is required when RATE_LIMIT_STORE=redis")
+		} else if err := validateRedisURL(c.RedisURL); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
 	if c.WebAuthnRPID == "" {
 		problems = append(problems, "WEBAUTHN_RP_ID is required")
 	}
@@ -290,7 +341,7 @@ func (c *Config) Validate() error {
 			problems = append(problems, err.Error())
 		}
 	}
-	if c.OIDCIssuerURL != "" || c.OIDCClientID != "" || c.OIDCRedirectURL != "" {
+	if c.OIDCIssuerURL != "" || c.OIDCClientID != "" || c.OIDCClientSecret != "" {
 		if err := validateExternalURL("OIDC_ISSUER_URL", c.OIDCIssuerURL); err != nil {
 			problems = append(problems, err.Error())
 		}
@@ -320,6 +371,9 @@ func (c *Config) Validate() error {
 		}
 		if c.MFASecretKey == c.HealthDataKey {
 			problems = append(problems, "MFA_SECRET_ENCRYPTION_KEY must be distinct from HEALTH_DATA_ENCRYPTION_KEY in production")
+		}
+		if c.BlindIndexKey == c.HealthDataKey || c.BlindIndexKey == c.MFASecretKey || c.BlindIndexKey == c.JWTSecret {
+			problems = append(problems, "SENSITIVE_DATA_INDEX_KEY must be distinct from encryption and JWT secrets in production")
 		}
 		for _, origin := range c.TrustedOrigins {
 			if !strings.HasPrefix(origin, "https://") {
@@ -442,6 +496,20 @@ func validateAbsoluteURL(name, raw string) error {
 	}
 	if u.Host == "" {
 		return errors.New(name + " host is required")
+	}
+	return nil
+}
+
+func validateRedisURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("REDIS_URL must be a valid URL")
+	}
+	if u.Scheme != "redis" && u.Scheme != "rediss" {
+		return errors.New("REDIS_URL must use redis or rediss")
+	}
+	if u.Host == "" {
+		return errors.New("REDIS_URL host is required")
 	}
 	return nil
 }

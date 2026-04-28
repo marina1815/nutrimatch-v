@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ type AITextGenerator interface {
 type RecommendationService struct {
 	Profiles     *ProfileService
 	Recipes      RecipeSearcher
+	LocalRecipes repository.LocalRecipeRepository
 	AI           AITextGenerator
 	MedicalRules repository.MedicalRuleRepository
 	Traces       repository.RecommendationTraceRepository
@@ -54,8 +56,14 @@ type searchPlan struct {
 	Query            string
 	Include          []string
 	Exclude          []string
+	HardExclude      []string
 	MealTypes        []string
 	PreferredCuisine []string
+	Fallback         bool
+	RelaxTaste       bool
+	RelaxNutrition   bool
+	Number           int
+	Relaxation       string
 }
 
 type aiRerank struct {
@@ -128,7 +136,7 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 
 	profile, lifestyle, preferences, constraints, _, err := s.Profiles.Get(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, ErrProfileAccessDenied
 	}
 	if profileID != "" && profile.ID != profileID {
 		return nil, ErrProfileAccessDenied
@@ -161,22 +169,96 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 	}
 
 	plans := buildSearchPlans(preferences, constraints, nutritionProfile, signals)
-	enrichedRecipes, externalTrace := s.searchAndEnrichRecipes(ctx, plans, lifestyle, preferences, constraints, nutritionProfile, matchedRules)
+	primaryPlans, fallbackPlans := splitSearchPlans(plans)
+	externalTrace := make(map[string]any)
+	var enrichedRecipes []enrichedRecipe
+	if s.LocalRecipes != nil {
+		localRecipes, localTrace := s.searchLocalCatalog(ctx, preferences, constraints, nutritionProfile, signals)
+		localTrace["reason"] = "local catalog baseline; external recipe API remains optional enrichment"
+		externalTrace["local_catalog_primary"] = localTrace
+		enrichedRecipes = append(enrichedRecipes, localRecipes...)
+	} else {
+		enrichedRecipes, externalTrace = s.searchAndEnrichRecipes(ctx, primaryPlans, lifestyle, preferences, constraints, nutritionProfile, matchedRules)
+	}
 
 	runID := uuid.NewString()
 	candidates := make([]*models.RecommendationCandidate, 0, len(enrichedRecipes))
 	acceptedCandidates := make([]*models.RecommendationCandidate, 0, len(enrichedRecipes))
 
 	for _, recipe := range enrichedRecipes {
-		candidate := s.evaluateCandidate(runID, userID, profile.ID, lifestyle, preferences, constraints, nutritionProfile, matchedRules, signals, recipe)
+		candidate := s.evaluateCandidate(ctx, runID, userID, profile.ID, lifestyle, preferences, constraints, nutritionProfile, matchedRules, signals, recipe)
 		candidates = append(candidates, candidate)
 		if candidate.Accepted {
 			acceptedCandidates = append(acceptedCandidates, candidate)
 		}
 	}
+	fallbackApplied := false
+	if len(acceptedCandidates) == 0 && hasExternalSearchFailure(externalTrace) {
+		localRecipes, localTrace := s.searchLocalCatalog(ctx, preferences, constraints, nutritionProfile, signals)
+		externalTrace["local_catalog_fallback"] = localTrace
+		if len(localRecipes) == 0 {
+			localRecipes = localSafetyFallbackRecipes()
+			externalTrace["local_safety_fallback"] = map[string]any{
+				"provider":    "local_safety_fallback",
+				"reason":      "local catalog returned no usable candidates; static emergency fallback applied",
+				"resultCount": len(localRecipes),
+				"fallback":    true,
+			}
+		}
+		for _, recipe := range localRecipes {
+			fallbackApplied = true
+			enrichedRecipes = append(enrichedRecipes, recipe)
+			candidate := s.evaluateCandidate(ctx, runID, userID, profile.ID, lifestyle, preferences, constraints, nutritionProfile, matchedRules, signals, recipe)
+			candidates = append(candidates, candidate)
+			if candidate.Accepted {
+				acceptedCandidates = append(acceptedCandidates, candidate)
+			}
+		}
+	}
+	if len(acceptedCandidates) == 0 && len(fallbackPlans) > 0 && !hasExternalSearchFailure(externalTrace) {
+		fallbackRecipes, fallbackTrace := s.searchAndEnrichRecipes(ctx, fallbackPlans, lifestyle, preferences, constraints, nutritionProfile, matchedRules)
+		mergeExternalTrace(externalTrace, fallbackTrace)
+		seenCandidates := candidateIDSet(candidates)
+		for _, recipe := range fallbackRecipes {
+			recipeID := fmt.Sprintf("%d", recipe.recipe.ID)
+			if _, seen := seenCandidates[recipeID]; seen {
+				continue
+			}
+			fallbackApplied = true
+			enrichedRecipes = append(enrichedRecipes, recipe)
+			candidate := s.evaluateCandidate(ctx, runID, userID, profile.ID, lifestyle, preferences, constraints, nutritionProfile, matchedRules, signals, recipe)
+			candidates = append(candidates, candidate)
+			seenCandidates[recipeID] = struct{}{}
+			if candidate.Accepted {
+				acceptedCandidates = append(acceptedCandidates, candidate)
+			}
+		}
+	}
+	if len(acceptedCandidates) == 0 && len(enrichedRecipes) == 0 && hasExternalSearchFailure(externalTrace) && externalTrace["local_catalog_fallback"] == nil {
+		localRecipes, localTrace := s.searchLocalCatalog(ctx, preferences, constraints, nutritionProfile, signals)
+		externalTrace["local_catalog_fallback"] = localTrace
+		if len(localRecipes) == 0 {
+			localRecipes = localSafetyFallbackRecipes()
+			externalTrace["local_safety_fallback"] = map[string]any{
+				"provider":    "local_safety_fallback",
+				"reason":      "local catalog returned no usable candidates; static emergency fallback applied",
+				"resultCount": len(localRecipes),
+				"fallback":    true,
+			}
+		}
+		for _, recipe := range localRecipes {
+			fallbackApplied = true
+			enrichedRecipes = append(enrichedRecipes, recipe)
+			candidate := s.evaluateCandidate(ctx, runID, userID, profile.ID, lifestyle, preferences, constraints, nutritionProfile, matchedRules, signals, recipe)
+			candidates = append(candidates, candidate)
+			if candidate.Accepted {
+				acceptedCandidates = append(acceptedCandidates, candidate)
+			}
+		}
+	}
 
 	aiApplied := false
-	if s.AI != nil && len(acceptedCandidates) > 0 && shouldApplyAIRerank(constraints, matchedRules) {
+	if s.AI != nil && len(acceptedCandidates) > 0 && hasExternalAcceptedCandidate(acceptedCandidates) && shouldApplyAIRerank(constraints, matchedRules) {
 		aiApplied = s.applyAIRerank(ctx, lifestyle, preferences, acceptedCandidates)
 	}
 
@@ -224,9 +306,10 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 			"similarityCuisines":  signals.Cuisines,
 			"similaritySources":   signals.Sources,
 			"semanticSimilarity":  signals.SemanticUsed,
+			"fallbackApplied":     fallbackApplied,
 		},
 		DecisionSummary: models.JSONMap{
-			"sourceHierarchy": []string{"external_recipe_api", "recipe_enrichment", "hard_filter", "deterministic_score", "ai_rerank_optional"},
+			"sourceHierarchy": []string{"external_recipe_api", "recipe_enrichment", "hard_filter", "deterministic_score", "vector_similarity", "ai_rerank_optional"},
 			"totalCandidates": len(candidates),
 			"accepted":        len(meals),
 			"rejected":        len(candidates) - len(meals),
@@ -337,10 +420,16 @@ func (s *RecommendationService) searchAndEnrichRecipes(ctx context.Context, plan
 	externalTrace := make(map[string]any)
 
 	for _, plan := range plans {
+		if plan.Fallback && len(recipesByID) > 0 {
+			continue
+		}
 		startedAt := time.Now()
 		searchOpts := buildSearchOptions(plan, lifestyle, preferences, constraints, nutritionProfile, matchedRules)
 		resp, searchErr := s.Recipes.Search(ctx, searchOpts)
-		externalTrace[plan.Name] = buildExternalSearchTrace(searchOpts, resp, searchErr, time.Since(startedAt))
+		trace := buildExternalSearchTrace(searchOpts, resp, searchErr, time.Since(startedAt))
+		trace["fallback"] = plan.Fallback
+		trace["relaxation"] = plan.Relaxation
+		externalTrace[plan.Name] = trace
 		if searchErr != nil || resp == nil {
 			continue
 		}
@@ -365,42 +454,245 @@ func (s *RecommendationService) searchAndEnrichRecipes(ctx context.Context, plan
 	return out, externalTrace
 }
 
+func splitSearchPlans(plans []searchPlan) ([]searchPlan, []searchPlan) {
+	primary := make([]searchPlan, 0, len(plans))
+	fallback := make([]searchPlan, 0)
+	for _, plan := range plans {
+		if plan.Fallback {
+			fallback = append(fallback, plan)
+			continue
+		}
+		primary = append(primary, plan)
+	}
+	return primary, fallback
+}
+
+func mergeExternalTrace(dst, src map[string]any) {
+	for key, value := range src {
+		dst[key] = value
+	}
+}
+
+func candidateIDSet(candidates []*models.RecommendationCandidate) map[string]struct{} {
+	out := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil || candidate.ExternalRecipeID == "" {
+			continue
+		}
+		out[candidate.ExternalRecipeID] = struct{}{}
+	}
+	return out
+}
+
+func hasExternalSearchFailure(trace map[string]any) bool {
+	for _, value := range trace {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		if errorClass, _ := item["errorClass"].(string); strings.HasPrefix(errorClass, "upstream_") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *RecommendationService) searchLocalCatalog(ctx context.Context, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, signals *SimilaritySignals) ([]enrichedRecipe, map[string]any) {
+	trace := map[string]any{
+		"provider":    "local_catalog",
+		"reason":      "external recipe provider returned no usable candidates",
+		"resultCount": 0,
+		"fallback":    true,
+		"errorClass":  "",
+	}
+	if s.LocalRecipes == nil {
+		trace["errorClass"] = "local_catalog_unavailable"
+		return nil, trace
+	}
+
+	query := repository.LocalRecipeQuery{
+		QueryTerms: mergeLists(
+			[]string(preferences.MealTypes),
+			[]string(preferences.PreferredCuisines),
+			[]string(nutritionProfile.RecommendedMealStyles),
+			[]string{nutritionGoalKeyword(nutritionProfile), fallbackBalancedQuery(nutritionProfile)},
+			signals.MealTypes,
+			signals.Cuisines,
+			signals.MealStyles,
+		),
+		Likes:               mergeLists([]string(preferences.Likes), signals.Likes),
+		ExcludedIngredients: mergeLists([]string(constraints.ExcludedIngredients), []string(nutritionProfile.DerivedExcluded)),
+		AllergyKeys:         []string(constraints.Allergies),
+		Limit:               25,
+	}
+	candidates, err := s.LocalRecipes.Search(ctx, query)
+	if err != nil {
+		trace["errorClass"] = "local_catalog_error"
+		trace["errorHash"] = security.SecureCacheKey(err.Error())
+		return nil, trace
+	}
+
+	out := make([]enrichedRecipe, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, enrichedRecipe{
+			recipe:       localCatalogRecipe(candidate),
+			sourcePlans:  []string{"local_catalog_fallback"},
+			cacheSources: []string{"embedded_xlsx_seed"},
+		})
+	}
+	trace["resultCount"] = len(out)
+	trace["querySignature"] = security.SecureCacheKey(mustJSON(query))
+	return out, trace
+}
+
+func localSafetyFallbackRecipes() []enrichedRecipe {
+	recipes := []spoonacular.Recipe{
+		localRecipe(910001, "Bol poulet, riz complet et legumes", []string{"chicken", "brown rice", "broccoli", "carrot", "olive oil"}, 620, 52, 72, 14, 7, 520),
+		localRecipe(910002, "Assiette dinde, quinoa et epinards", []string{"turkey", "quinoa", "spinach", "tomato", "olive oil"}, 590, 49, 58, 16, 6, 480),
+		localRecipe(910003, "Bowl boeuf maigre et patate douce", []string{"beef", "sweet potato", "green bean", "onion"}, 640, 47, 68, 18, 9, 610),
+		localRecipe(910004, "Salade thon, riz et concombre", []string{"tuna", "rice", "cucumber", "lettuce", "olive oil"}, 540, 46, 55, 13, 5, 560),
+		localRecipe(910005, "Pois chiches, lentilles et legumes", []string{"chickpea", "lentil", "tomato", "spinach", "garlic"}, 610, 43, 88, 9, 10, 430),
+	}
+
+	out := make([]enrichedRecipe, 0, len(recipes))
+	for _, recipe := range recipes {
+		out = append(out, enrichedRecipe{
+			recipe:       recipe,
+			sourcePlans:  []string{"local_safety_fallback"},
+			cacheSources: []string{},
+		})
+	}
+	return out
+}
+
+func localRecipe(id int, title string, ingredients []string, calories, protein, carbs, fat, sugar, sodium float64) spoonacular.Recipe {
+	items := make([]spoonacular.Ingredient, 0, len(ingredients))
+	for _, ingredient := range ingredients {
+		items = append(items, spoonacular.Ingredient{Name: ingredient})
+	}
+	return spoonacular.Recipe{
+		ID:                  id,
+		Title:               title,
+		Summary:             "Recette de secours locale utilisee uniquement lorsque le fournisseur de recettes externe ne retourne aucun candidat. Elle reste filtree par les allergies, exclusions et regles nutritionnelles.",
+		ReadyInMinutes:      30,
+		Servings:            1,
+		ExtendedIngredients: items,
+		Nutrition: spoonacular.Nutrition{Nutrients: []spoonacular.Nutrient{
+			{Name: "Calories", Amount: calories, Unit: "kcal"},
+			{Name: "Protein", Amount: protein, Unit: "g"},
+			{Name: "Carbohydrates", Amount: carbs, Unit: "g"},
+			{Name: "Fat", Amount: fat, Unit: "g"},
+			{Name: "Sugar", Amount: sugar, Unit: "g"},
+			{Name: "Sodium", Amount: sodium, Unit: "mg"},
+		}},
+	}
+}
+
+func localCatalogRecipe(candidate repository.LocalRecipeCandidate) spoonacular.Recipe {
+	ingredients := make([]spoonacular.Ingredient, 0, len(candidate.Ingredients))
+	for _, ingredient := range candidate.Ingredients {
+		ingredients = append(ingredients, spoonacular.Ingredient{Name: ingredient})
+	}
+	return spoonacular.Recipe{
+		ID:                  stableLocalRecipeIntID(candidate.ID),
+		Title:               candidate.Title,
+		Summary:             "Recette issue du catalogue local XLSX utilisee lorsque Spoonacular ne fournit aucun candidat exploitable. Elle reste filtree par le pare-feu nutritionnel deterministe.",
+		ReadyInMinutes:      30,
+		Servings:            1,
+		ExtendedIngredients: ingredients,
+		Nutrition: spoonacular.Nutrition{Nutrients: []spoonacular.Nutrient{
+			{Name: "Calories", Amount: candidate.Calories, Unit: "kcal"},
+			{Name: "Protein", Amount: candidate.Protein, Unit: "g"},
+			{Name: "Carbohydrates", Amount: candidate.Carbs, Unit: "g"},
+			{Name: "Fat", Amount: candidate.Fat, Unit: "g"},
+			{Name: "Sugar", Amount: candidate.Sugar, Unit: "g"},
+			{Name: "Sodium", Amount: candidate.SodiumMg, Unit: "mg"},
+		}},
+	}
+}
+
+func recipeProvider(recipe enrichedRecipe) string {
+	for _, plan := range recipe.sourcePlans {
+		if plan == "local_safety_fallback" {
+			return "local_safety_fallback"
+		}
+		if strings.HasPrefix(plan, "local_") {
+			return strings.TrimSuffix(plan, "_fallback")
+		}
+	}
+	return "spoonacular"
+}
+
+func stableLocalRecipeIntID(id string) int {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(id))
+	return int(900000000 + hash.Sum32()%90000000)
+}
+
 func buildSearchPlans(preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, signals *SimilaritySignals) []searchPlan {
-	queryTerms := mergeLists([]string(preferences.MealStyles), []string(preferences.Likes), []string(nutritionProfile.RecommendedMealStyles))
-	include := mergeLists([]string(preferences.Likes), signals.Likes)
-	exclude := mergeLists([]string(preferences.Dislikes), []string(constraints.Allergies), []string(constraints.ExcludedIngredients), []string(nutritionProfile.DerivedExcluded))
-	mealTypes := mergeLists([]string(preferences.MealTypes), signals.MealTypes)
-	preferredCuisine := mergeLists([]string(preferences.PreferredCuisines), signals.Cuisines)
+	queryTerms := mergeLists(
+		[]string(preferences.MealStyles),
+		[]string(preferences.Likes),
+		[]string(preferences.MealTypes),
+		[]string(preferences.PreferredCuisines),
+		[]string(nutritionProfile.RecommendedMealStyles),
+		signals.MealStyles,
+		signals.Likes,
+		signals.MealTypes,
+		signals.Cuisines,
+	)
+	hardExclude := mergeLists([]string(constraints.Allergies), []string(constraints.ExcludedIngredients), []string(nutritionProfile.DerivedExcluded))
 
 	plans := []searchPlan{
 		{
-			Name:             "strict_profile",
-			Query:            buildQuery(queryTerms, nil),
-			Include:          include,
-			Exclude:          exclude,
-			MealTypes:        mealTypes,
-			PreferredCuisine: preferredCuisine,
+			Name:        "profile_query",
+			Query:       buildQuery(queryTerms, nil),
+			Exclude:     hardExclude,
+			HardExclude: hardExclude,
+			Relaxation:  "soft preference query with hard safety exclusions only",
 		},
 		{
-			Name:             "goal_balanced",
-			Query:            buildQuery([]string{nutritionGoalKeyword(nutritionProfile)}, signals.MealStyles),
-			Include:          nil,
-			Exclude:          exclude,
-			MealTypes:        mealTypes,
-			PreferredCuisine: preferredCuisine,
+			Name:        "goal_balanced",
+			Query:       buildQuery([]string{nutritionGoalKeyword(nutritionProfile)}, signals.MealStyles),
+			Exclude:     hardExclude,
+			HardExclude: hardExclude,
+			Relaxation:  "goal query with hard safety exclusions only",
 		},
 	}
 
 	if len(signals.MealStyles) > 0 || len(signals.Likes) > 0 || len(signals.MealTypes) > 0 || len(signals.Cuisines) > 0 {
 		plans = append(plans, searchPlan{
-			Name:             "similarity_expansion",
-			Query:            buildQuery(signals.MealStyles, signals.Likes),
-			Include:          signals.Likes,
-			Exclude:          exclude,
-			MealTypes:        mealTypes,
-			PreferredCuisine: preferredCuisine,
+			Name:        "similarity_expansion",
+			Query:       buildQuery(mergeLists(signals.MealStyles, signals.MealTypes, signals.Cuisines), signals.Likes),
+			Exclude:     hardExclude,
+			HardExclude: hardExclude,
+			Relaxation:  "similarity query with hard safety exclusions only",
 		})
 	}
+	plans = append(plans,
+		searchPlan{
+			Name:           "fallback_goal_candidates",
+			Query:          nutritionGoalKeyword(nutritionProfile),
+			Exclude:        hardExclude,
+			HardExclude:    hardExclude,
+			Fallback:       true,
+			RelaxTaste:     true,
+			RelaxNutrition: true,
+			Number:         25,
+			Relaxation:     "drop preference filters and provider nutrient bounds; keep safety exclusions",
+		},
+		searchPlan{
+			Name:           "fallback_balanced_safety_net",
+			Query:          fallbackBalancedQuery(nutritionProfile),
+			Exclude:        hardExclude,
+			HardExclude:    hardExclude,
+			Fallback:       true,
+			RelaxTaste:     true,
+			RelaxNutrition: true,
+			Number:         25,
+			Relaxation:     "broad healthy candidate pool; deterministic firewall remains authoritative",
+		},
+	)
 	return plans
 }
 
@@ -424,65 +716,52 @@ func enrichRecipesFromSearchPlan(planName string, resp *spoonacular.SearchRespon
 }
 
 func buildSearchOptions(plan searchPlan, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule) spoonacular.SearchOptions {
-	maxProtein := 0.0
-	for _, rule := range matchedRules {
-		if rule.MaxProteinGrams <= 0 {
-			continue
-		}
-		if maxProtein == 0 || rule.MaxProteinGrams < maxProtein {
-			maxProtein = rule.MaxProteinGrams
-		}
-	}
-
-	mealType := ""
-	preferredCuisines := []string{}
-	excludedCuisines := []string{}
-	if preferences != nil {
-		mealTypes := taxonomy.SpoonacularMealTypeList(plan.MealTypes)
-		if len(mealTypes) > 0 {
-			mealType = mealTypes[0]
-		}
-		preferredCuisines = taxonomy.SpoonacularCuisineList(plan.PreferredCuisine)
-		excludedCuisines = taxonomy.SpoonacularCuisineList([]string(preferences.ExcludedCuisines))
-	}
-
 	maxReadyTime := 45
 	if lifestyle != nil && lifestyle.MaxReadyTime > 0 {
 		maxReadyTime = lifestyle.MaxReadyTime
 	}
+	if plan.RelaxTaste && maxReadyTime < 60 {
+		maxReadyTime = 60
+	}
 
-	return spoonacular.SearchOptions{
+	excludeIngredients := plan.Exclude
+	if plan.RelaxTaste {
+		excludeIngredients = plan.HardExclude
+	}
+	number := plan.Number
+	if number <= 0 {
+		number = 12
+	}
+
+	opts := spoonacular.SearchOptions{
 		Query:              plan.Query,
-		Cuisine:            preferredCuisines,
-		ExcludeCuisine:     excludedCuisines,
-		Type:               mealType,
-		IncludeIngredients: plan.Include,
-		ExcludeIngredients: plan.Exclude,
+		ExcludeIngredients: excludeIngredients,
 		Intolerances:       normalizeIntolerances(constraints.Allergies),
 		MaxReadyTime:       maxReadyTime,
-		Number:             12,
-		MaxCalories:        nutritionProfile.MaxMealCalories,
-		MinProtein:         nutritionProfile.MinProteinPerMeal,
-		MaxProtein:         maxProtein,
-		MaxCarbs:           nutritionProfile.MaxCarbsPerMeal,
-		MaxFat:             nutritionProfile.MaxFatPerMeal,
-		MaxSugar:           nutritionProfile.MaxSugarPerMeal,
-		MaxSodium:          nutritionProfile.MaxSodiumMgPerMeal,
+		Number:             number,
 	}
+	return opts
 }
 
-func (s *RecommendationService) evaluateCandidate(runID, userID, profileID string, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule, signals *SimilaritySignals, recipe enrichedRecipe) *models.RecommendationCandidate {
+func (s *RecommendationService) evaluateCandidate(ctx context.Context, runID, userID, profileID string, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, matchedRules []models.MedicalRule, signals *SimilaritySignals, recipe enrichedRecipe) *models.RecommendationCandidate {
 	facts := buildCandidateFacts(recipe.recipe, lifestyle)
 	filterResult := evaluateHardFilters(preferences, constraints, nutritionProfile, matchedRules, facts)
 	scoreResult := computeDeterministicScore(preferences, nutritionProfile, signals, facts, len(filterResult.rejectedReasons) == 0)
+	vectorScore, recipeVectorHash := s.scoreRecipeVector(ctx, recipe.recipe.ID, preferences, constraints, nutritionProfile, facts)
+	if len(filterResult.rejectedReasons) == 0 && vectorScore > 0 {
+		scoreResult.score += vectorScore * 10
+		scoreResult.acceptedReasons = append(scoreResult.acceptedReasons, "recipe vector matches nutrition intent")
+	}
+	scoreResult.scoreBreakdown["recipeVectorSimilarity"] = vectorScore
 
+	provider := recipeProvider(recipe)
 	return &models.RecommendationCandidate{
 		RunID:            runID,
 		UserID:           userID,
 		ProfileID:        profileID,
 		ExternalRecipeID: fmt.Sprintf("%d", recipe.recipe.ID),
 		Title:            recipe.recipe.Title,
-		Source:           "hybrid_orchestrator",
+		Source:           provider,
 		Stage:            candidateStage(len(filterResult.rejectedReasons) == 0),
 		Accepted:         len(filterResult.rejectedReasons) == 0,
 		FinalScore:       scoreResult.score,
@@ -499,16 +778,28 @@ func (s *RecommendationService) evaluateCandidate(runID, userID, profileID strin
 		ScoreBreakdown:   models.JSONMap(scoreResult.scoreBreakdown),
 		FilterDecisions:  models.JSONMap(filterResult.filterDecisions),
 		SourceProvenance: models.JSONMap{
-			"provider":      "spoonacular",
+			"provider":      provider,
 			"recipeId":      recipe.recipe.ID,
 			"searchPlans":   recipe.sourcePlans,
 			"cacheSources":  recipe.cacheSources,
-			"pipeline":      []string{"recipe_enrichment", "hard_filter", "deterministic_score", "ai_rerank_optional"},
+			"recipeVector":  map[string]any{"version": RecipeEmbeddingVersion, "hash": recipeVectorHash},
+			"pipeline":      []string{"recipe_enrichment", "hard_filter", "deterministic_score", "vector_similarity", "ai_rerank_optional"},
 			"enrichedFacts": []string{"nutrition", "ingredients", "summary"},
 		},
 		Explanation: buildExplanation(scoreResult.acceptedReasons, filterResult.rejectedReasons),
 		Description: facts.description,
 	}
+}
+
+func (s *RecommendationService) scoreRecipeVector(ctx context.Context, recipeID int, preferences *models.Preferences, constraints *models.Constraints, nutritionProfile *models.NutritionProfile, facts candidateFacts) (float64, string) {
+	if s == nil || s.Similarity == nil || s.Similarity.Embeddings == nil {
+		return 0, ""
+	}
+	score, hash, err := s.Similarity.Embeddings.ScoreRecipe(ctx, fmt.Sprintf("%d", recipeID), preferences, constraints, nutritionProfile, facts)
+	if err != nil {
+		return 0, hash
+	}
+	return score, hash
 }
 
 func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *models.Lifestyle, preferences *models.Preferences, candidates []*models.RecommendationCandidate) bool {
@@ -711,10 +1002,12 @@ func computeDeterministicScore(preferences *models.Preferences, nutritionProfile
 	score := 0.0
 	baseScore := 40.0
 	likes := []string{}
+	dislikes := []string{}
 	similarityLikes := []string{}
 	recommendedMealStyles := []string{}
 	if preferences != nil {
 		likes = []string(preferences.Likes)
+		dislikes = []string(preferences.Dislikes)
 	}
 	if signals != nil {
 		similarityLikes = signals.Likes
@@ -724,6 +1017,7 @@ func computeDeterministicScore(preferences *models.Preferences, nutritionProfile
 	}
 	nutrientBonus := nutrientAlignmentBonus(facts.calories, facts.protein, facts.carbs, facts.fat, nutritionProfile)
 	preferenceOverlap := overlapCount(facts.ingredients, likes)
+	dislikeOverlap := overlapCount(facts.ingredients, dislikes)
 	similarityOverlap := overlapCount(facts.ingredients, similarityLikes)
 	styleOverlap := overlapCount(facts.baseTags, recommendedMealStyles)
 
@@ -741,6 +1035,9 @@ func computeDeterministicScore(preferences *models.Preferences, nutritionProfile
 			score += 8
 			acceptedReasons = append(acceptedReasons, "matches recommended meal styles")
 		}
+		if dislikeOverlap > 0 {
+			score -= dislikeOverlap * 8
+		}
 		score += nutrientBonus
 		acceptedReasons = append(acceptedReasons, "passes deterministic nutrition firewall")
 	}
@@ -753,6 +1050,7 @@ func computeDeterministicScore(preferences *models.Preferences, nutritionProfile
 			"finalBeforeAI":       score,
 			"nutrientAlignment":   nutrientBonus,
 			"preferenceOverlap":   preferenceOverlap,
+			"dislikePenalty":      dislikeOverlap * 8,
 			"similarityOverlap":   similarityOverlap,
 			"recommendedStyleHit": styleOverlap,
 		},
@@ -1084,6 +1382,21 @@ func shouldApplyAIRerank(constraints *models.Constraints, matchedRules []models.
 	return len(constraints.Conditions) == 0 && len(constraints.ChronicDiseases) == 0
 }
 
+func hasExternalAcceptedCandidate(candidates []*models.RecommendationCandidate) bool {
+	for _, candidate := range candidates {
+		if candidate == nil || !candidate.Accepted {
+			continue
+		}
+		switch candidate.Source {
+		case "local_catalog", "local_safety_fallback":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 func nutritionGoalKeyword(profile *models.NutritionProfile) string {
 	if profile.MaxSodiumMgPerMeal <= 700 {
 		return "low sodium"
@@ -1095,6 +1408,14 @@ func nutritionGoalKeyword(profile *models.NutritionProfile) string {
 		return "high protein"
 	}
 	return "balanced"
+}
+
+func fallbackBalancedQuery(profile *models.NutritionProfile) string {
+	goal := nutritionGoalKeyword(profile)
+	if goal == "balanced" {
+		return "healthy balanced"
+	}
+	return goal + " healthy"
 }
 
 func stripHTML(input string) string {

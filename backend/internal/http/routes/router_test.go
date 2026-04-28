@@ -91,6 +91,16 @@ func (r *memoryUserRepository) UpdatePasswordHash(_ context.Context, userID, pas
 	return nil
 }
 
+func (r *memoryUserRepository) UpdatePreferredMFAMethod(_ context.Context, userID, method string) error {
+	user, ok := r.byID[userID]
+	if !ok {
+		return errors.New("not found")
+	}
+	user.PreferredMFAMethod = method
+	r.byEmail[user.Email] = user
+	return nil
+}
+
 type memorySessionRepository struct {
 	byID          map[string]*models.Session
 	byRefreshHash map[string]*models.Session
@@ -380,6 +390,12 @@ type noopAuditRepository struct{}
 
 func (r *noopAuditRepository) Create(_ context.Context, _ *models.AuditEvent) error { return nil }
 func (r *noopAuditRepository) LatestHash(_ context.Context) (string, error)         { return "", nil }
+func (r *noopAuditRepository) AppendChained(_ context.Context, event *models.AuditEvent, hash func(string, time.Time) string) error {
+	event.PreviousHash = ""
+	event.OccurredAt = time.Now().UTC()
+	event.EventHash = hash("", event.OccurredAt)
+	return nil
+}
 func (r *noopAuditRepository) ListSince(_ context.Context, _ time.Time, _ int) ([]models.AuditEvent, error) {
 	return []models.AuditEvent{}, nil
 }
@@ -1748,8 +1764,12 @@ func TestRouterGracefullyDegradesWhenRecipeProviderIsUnavailable(t *testing.T) {
 	}
 	payloadResp := decodeJSONBody(t, resp)
 	meals, ok := payloadResp["meals"].([]any)
-	if !ok || len(meals) != 0 {
-		t.Fatalf("expected zero meals on upstream outage, got %#v", payloadResp["meals"])
+	if !ok || len(meals) == 0 {
+		t.Fatalf("expected local safety fallback meals on upstream outage, got %#v", payloadResp["meals"])
+	}
+	firstMeal := meals[0].(map[string]any)
+	if firstMeal["source"] != "local_safety_fallback" {
+		t.Fatalf("expected local safety fallback source, got %#v", firstMeal["source"])
 	}
 
 	traceResp := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/recommendations/"+profileID+"/trace", nil, map[string]string{
@@ -1759,13 +1779,16 @@ func TestRouterGracefullyDegradesWhenRecipeProviderIsUnavailable(t *testing.T) {
 		t.Fatalf("expected trace status 200, got %d", traceResp.StatusCode)
 	}
 	tracePayload := decodeJSONBody(t, traceResp)
-	if got := strings.TrimSpace(tracePayload["status"].(string)); got != "no_matches" {
-		t.Fatalf("expected no_matches status on upstream outage, got %q", got)
+	if got := strings.TrimSpace(tracePayload["status"].(string)); got != "completed" {
+		t.Fatalf("expected completed status with local fallback, got %q", got)
 	}
 	externalTrace := tracePayload["externalTrace"].(map[string]any)
-	strictTrace := externalTrace["strict_profile"].(map[string]any)
+	strictTrace := externalTrace["profile_query"].(map[string]any)
 	if strictTrace["errorClass"] != "upstream_unavailable" {
 		t.Fatalf("expected upstream_unavailable trace class, got %#v", strictTrace["errorClass"])
+	}
+	if externalTrace["local_safety_fallback"] == nil {
+		t.Fatalf("expected local safety fallback trace")
 	}
 }
 

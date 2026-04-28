@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -13,7 +14,10 @@ import (
 	"github.com/marina1815/nutrimatch/internal/http/dto"
 	"github.com/marina1815/nutrimatch/internal/http/handlers"
 	"github.com/marina1815/nutrimatch/internal/http/routes"
+	"github.com/marina1815/nutrimatch/internal/localdata"
+	"github.com/marina1815/nutrimatch/internal/repository"
 	"github.com/marina1815/nutrimatch/internal/repository/gorm"
+	redisrepo "github.com/marina1815/nutrimatch/internal/repository/redis"
 	"github.com/marina1815/nutrimatch/internal/security"
 	"github.com/marina1815/nutrimatch/internal/services"
 	"golang.org/x/time/rate"
@@ -22,12 +26,12 @@ import (
 func main() {
 	cfg := config.Load()
 	if err := cfg.Validate(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("configuration validation failed: %v", err)
 	}
 
 	db, err := database.Connect(cfg.DBURL, cfg.AppEnv)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("database connection failed: %v", err)
 	}
 
 	userRepo := gormrepo.NewUserRepository(db)
@@ -37,9 +41,24 @@ func main() {
 	recommendationTraceRepo := gormrepo.NewRecommendationTraceRepository(db)
 	vectorRepo := gormrepo.NewVectorRepository(db)
 	searchResponseCacheRepo := gormrepo.NewSearchResponseCacheRepository(db)
+	localRecipeRepo := gormrepo.NewLocalRecipeRepository(db)
 	auditRepo := gormrepo.NewAuditRepository(db)
 	authFailureRepo := gormrepo.NewAuthFailureRepository(db)
 	rateLimitBucketRepo := gormrepo.NewRateLimitBucketRepository(db)
+	var rateLimitStore repository.RateLimitBucketRepository = rateLimitBucketRepo
+	if cfg.RateLimitStore == "redis" {
+		redisClient, err := redisrepo.NewClient(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("redis configuration failed: %v", err)
+		}
+		redisRateRepo := redisrepo.NewRateLimitBucketRepository(redisClient)
+		if err := redisRateRepo.Ping(context.Background()); err != nil {
+			log.Fatalf("redis connection failed: %v", err)
+		}
+		defer redisRateRepo.Close()
+		rateLimitStore = redisRateRepo
+	}
+	retentionRepo := gormrepo.NewRetentionRepository(db)
 	externalIdentityRepo := gormrepo.NewExternalIdentityRepository(db)
 	mfaRepo := gormrepo.NewMFARepository(db)
 	txManager := gormrepo.NewTxManager(db)
@@ -62,11 +81,11 @@ func main() {
 	}
 	healthCipher, err := security.NewCipher(cfg.HealthDataKey)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("health data cipher initialization failed: %v", err)
 	}
 	mfaCipher, err := security.NewCipher(cfg.MFASecretKey)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("mfa cipher initialization failed: %v", err)
 	}
 	webAuthn, err := webauthn.New(&webauthn.Config{
 		RPID:          cfg.WebAuthnRPID,
@@ -74,11 +93,16 @@ func main() {
 		RPOrigins:     cfg.WebAuthnOrigins,
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("webauthn initialization failed: %v", err)
 	}
 	recommendationCache := security.NewTTLCache[*dto.RecommendationResponse](3 * time.Minute)
 	searchCache := security.NewTTLCache[*spoonacular.SearchResponse](2 * time.Minute)
-	recommendationQuota := security.NewPersistentQuotaManager(rateLimitBucketRepo, rate.Every(2*time.Second), 3)
+	recommendationQuota := security.NewPersistentQuotaManager(rateLimitStore, rate.Every(2*time.Second), 3)
+	if seed, err := localdata.LoadCatalogSeed(); err != nil {
+		log.Printf("local recipe catalog seed load failed: %v", err)
+	} else if err := localRecipeRepo.Seed(context.Background(), seed); err != nil {
+		log.Printf("local recipe catalog seed failed: %v", err)
+	}
 
 	authService := &services.AuthService{
 		Users:          userRepo,
@@ -98,6 +122,20 @@ func main() {
 		},
 	}
 	auditService := &services.AuditService{Repo: auditRepo}
+	retentionService := &services.RetentionService{
+		Repo: retentionRepo,
+		Policy: repository.RetentionPolicy{
+			AuthFailureRetentionDays:         cfg.AuthFailureRetentionDays,
+			RateLimitBucketRetentionHours:    cfg.RateLimitBucketRetentionHours,
+			SessionRetentionDays:             cfg.SessionRetentionDays,
+			RecommendationTraceRetentionDays: cfg.RecommendationTraceRetentionDays,
+			CacheRetentionHours:              cfg.CacheRetentionHours,
+		},
+	}
+	if err := retentionService.Apply(context.Background()); err != nil {
+		log.Printf("retention cleanup failed: %v", err)
+	}
+	retentionService.Start(context.Background(), 24*time.Hour, log.Default())
 	accessPolicyService := &services.AccessPolicyService{}
 	nutritionProfileService := &services.NutritionProfileService{
 		Profiles:     profileRepo,
@@ -110,6 +148,7 @@ func main() {
 		Users:        userRepo,
 		TxManager:    txManager,
 		Cipher:       healthCipher,
+		Indexer:      security.NewBlindIndexer(cfg.BlindIndexKey),
 		Nutrition:    nutritionProfileService,
 		MedicalRules: medicalRuleRepo,
 	}
@@ -119,11 +158,13 @@ func main() {
 		Embeddings: &services.EmbeddingService{Vectors: vectorRepo},
 		Semantic:   &services.LocalSemanticExpander{},
 	}
-	ingredientService := &services.IngredientService{}
+	ingredientService := &services.IngredientService{Local: localRecipeRepo}
 
 	recipeClient := &spoonacular.Client{
-		BaseURL: cfg.SpoonacularBaseURL,
-		APIKey:  cfg.SpoonacularAPIKey,
+		BaseURL:       cfg.SpoonacularBaseURL,
+		APIKey:        cfg.SpoonacularAPIKey,
+		Limiter:       rate.NewLimiter(rate.Every(time.Second), 2),
+		MaxConcurrent: 2,
 	}
 	ingredientService.Client = recipeClient
 	recipeSearcher := &spoonacular.ResilientSearcher{
@@ -148,6 +189,7 @@ func main() {
 	recommendationService := &services.RecommendationService{
 		Profiles:     profileService,
 		Recipes:      recipeSearcher,
+		LocalRecipes: localRecipeRepo,
 		AI:           aiClient,
 		MedicalRules: medicalRuleRepo,
 		Traces:       recommendationTraceRepo,
@@ -196,7 +238,7 @@ func main() {
 	}
 	healthHandler := &handlers.HealthHandler{}
 
-	router := routes.SetupRouter(cfg, tokens, csrfManager, sessionRepo, rateLimitBucketRepo, authHandler, profileHandler, recHandler, healthHandler)
+	router := routes.SetupRouter(cfg, tokens, csrfManager, sessionRepo, rateLimitStore, authHandler, profileHandler, recHandler, healthHandler)
 	server := &http.Server{
 		Addr:              ":" + cfg.AppPort,
 		Handler:           router,
@@ -208,6 +250,6 @@ func main() {
 	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		log.Fatalf("http server failed: %v", err)
 	}
 }

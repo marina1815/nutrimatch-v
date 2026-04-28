@@ -13,6 +13,7 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id string) (*models.User, error)
 	UpdateFullName(ctx context.Context, userID, fullName string) error
 	UpdatePasswordHash(ctx context.Context, userID, passwordHash string) error
+	UpdatePreferredMFAMethod(ctx context.Context, userID, method string) error
 }
 
 type SessionRepository interface {
@@ -51,6 +52,7 @@ type RecommendationTraceRepository interface {
 
 type VectorRepository interface {
 	UpsertProfileEmbedding(ctx context.Context, embedding *models.ProfileEmbedding) error
+	UpsertRecipeEmbedding(ctx context.Context, embedding *models.RecipeEmbedding) error
 	SearchSimilarProfileBundles(ctx context.Context, userID, profileID, embeddingVersion, vectorLiteral string, limit int) ([]ProfileBundle, error)
 }
 
@@ -64,10 +66,14 @@ type MFARepository interface {
 	UpdateWebAuthnCredentialUsed(ctx context.Context, credentialID string, usedAt time.Time) error
 	CreateWebAuthnChallenge(ctx context.Context, challenge *models.WebAuthnChallenge) error
 	ConsumeWebAuthnChallenge(ctx context.Context, userID, challengeID, kind string, now time.Time) (*models.WebAuthnChallenge, error)
+	CreateMFALoginChallenge(ctx context.Context, challenge *models.MFALoginChallenge) error
+	GetMFALoginChallenge(ctx context.Context, challengeID string, now time.Time) (*models.MFALoginChallenge, error)
+	ConsumeMFALoginChallenge(ctx context.Context, challengeID string, now time.Time) (*models.MFALoginChallenge, error)
 }
 
 type AuditRepository interface {
 	Create(ctx context.Context, event *models.AuditEvent) error
+	AppendChained(ctx context.Context, event *models.AuditEvent, hash func(previousHash string, occurredAt time.Time) string) error
 	LatestHash(ctx context.Context) (string, error)
 	ListSince(ctx context.Context, since time.Time, limit int) ([]models.AuditEvent, error)
 }
@@ -79,6 +85,44 @@ type AuthFailureRepository interface {
 
 type RateLimitBucketRepository interface {
 	TakeToken(ctx context.Context, key, bucketType string, refillPerSecond float64, burst int, now time.Time) (bool, error)
+}
+
+type LocalRecipeRepository interface {
+	Search(ctx context.Context, query LocalRecipeQuery) ([]LocalRecipeCandidate, error)
+	SuggestIngredients(ctx context.Context, query string, limit int) ([]string, error)
+}
+
+type LocalRecipeQuery struct {
+	QueryTerms          []string
+	Likes               []string
+	ExcludedIngredients []string
+	AllergyKeys         []string
+	Limit               int
+}
+
+type LocalRecipeCandidate struct {
+	ID          string
+	Title       string
+	Ingredients []string
+	Calories    float64
+	Protein     float64
+	Carbs       float64
+	Fat         float64
+	Sugar       float64
+	SodiumMg    float64
+	Score       float64
+}
+
+type RetentionRepository interface {
+	ApplyRetention(ctx context.Context, policy RetentionPolicy, now time.Time) error
+}
+
+type RetentionPolicy struct {
+	AuthFailureRetentionDays         int
+	RateLimitBucketRetentionHours    int
+	SessionRetentionDays             int
+	RecommendationTraceRetentionDays int
+	CacheRetentionHours              int
 }
 
 type ExternalIdentityRepository interface {
@@ -114,6 +158,7 @@ type Repositories struct {
 	AuthFailures       AuthFailureRepository
 	RateLimitBuckets   RateLimitBucketRepository
 	ExternalIdentities ExternalIdentityRepository
+	LocalRecipes       LocalRecipeRepository
 }
 
 type TxManager interface {

@@ -3,13 +3,26 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { ApiError, getCurrentSession, loginUser } from "@/lib/api";
+import {
+  ApiError,
+  beginLoginPasskey,
+  completeTotpLogin,
+  finishLoginPasskey,
+  getCurrentSession,
+  loginUser,
+} from "@/lib/api";
 import { setCurrentProfileId } from "@/lib/session";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 export default function LoginPage() {
   const router = useRouter();
   const [form, setForm] = useState({ email: "", password: "" });
+  const [mfa, setMfa] = useState<{
+    challengeId: string;
+    preferredMethod: "totp" | "passkey";
+    allowedMethods: Array<"totp" | "passkey">;
+  } | null>(null);
+  const [totpCode, setTotpCode] = useState("");
   const [errors, setErrors] = useState<{ email?: string; password?: string; form?: string }>({});
   const [loading, setLoading] = useState(false);
 
@@ -32,22 +45,69 @@ export default function LoginPage() {
     setErrors({});
 
     try {
-      await loginUser(form);
-      try {
-        const session = await getCurrentSession();
-        if (session.profileId) {
-          setCurrentProfileId(session.profileId);
-        }
-        router.push(session.hasProfile ? "/results" : "/onboarding");
-      } catch {
-        router.push("/onboarding");
+      const result = await loginUser(form);
+      if ("mfa_required" in result) {
+        setMfa({
+          challengeId: result.challenge_id,
+          preferredMethod: result.preferred_method,
+          allowedMethods: result.allowed_methods,
+        });
+        setForm((current) => ({ ...current, password: "" }));
+        return;
       }
+      await redirectAfterLogin();
     } catch (error) {
       if (error instanceof ApiError) {
         setErrors({ form: getSafeErrorMessage(error, "auth.login") });
       } else {
         setErrors({ form: getSafeErrorMessage(error, "auth.login") });
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const redirectAfterLogin = async () => {
+    try {
+      const session = await getCurrentSession();
+      if (session.profileId) {
+        setCurrentProfileId(session.profileId);
+      }
+      router.push(session.hasProfile ? "/results" : "/onboarding");
+    } catch {
+      router.push("/onboarding");
+    }
+  };
+
+  const handleTotpSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!mfa) return;
+    setLoading(true);
+    setErrors({});
+    try {
+      await completeTotpLogin({ challengeId: mfa.challengeId, code: totpCode });
+      await redirectAfterLogin();
+    } catch (error) {
+      setErrors({ form: getSafeErrorMessage(error, "auth.login") });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePasskeyLogin = async () => {
+    if (!mfa) return;
+    setLoading(true);
+    setErrors({});
+    try {
+      const begin = await beginLoginPasskey(mfa.challengeId);
+      const credential = await navigator.credentials.get(normalizeCredentialRequestOptions(begin.options));
+      if (!credential) {
+        throw new ApiError("Passkey verification was cancelled", 400, "PASSKEY_CANCELLED");
+      }
+      await finishLoginPasskey(mfa.challengeId, begin.challengeId, credential as PublicKeyCredential);
+      await redirectAfterLogin();
+    } catch (error) {
+      setErrors({ form: getSafeErrorMessage(error, "auth.login") });
     } finally {
       setLoading(false);
     }
@@ -61,6 +121,7 @@ export default function LoginPage() {
         <h1 className="title">Welcome back</h1>
         <p className="sub">Sign in to access your nutrition profile</p>
 
+        {!mfa && (
         <form onSubmit={(event) => void handleSubmit(event)} className="form" noValidate>
           <div className="field">
             <label className="label" htmlFor="email">Email</label>
@@ -107,87 +168,95 @@ export default function LoginPage() {
             {loading ? <span className="spinner" /> : "Sign in"}
           </button>
         </form>
+        )}
+
+        {mfa && (
+          <form onSubmit={(event) => void handleTotpSubmit(event)} className="form" noValidate>
+            <p className="sub">
+              Multi-factor verification is required because this account has MFA enabled.
+            </p>
+            {mfa.allowedMethods.includes("totp") && (
+              <div className="field">
+                <label className="label" htmlFor="totp">Authenticator code</label>
+                <input
+                  id="totp"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  className="input"
+                  value={totpCode}
+                  onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                  placeholder="123456"
+                />
+              </div>
+            )}
+
+            {errors.form && <span className="error">{errors.form}</span>}
+
+            {mfa.allowedMethods.includes("totp") && (
+              <button type="submit" className="btn" disabled={loading || totpCode.length !== 6}>
+                {loading ? <span className="spinner" /> : "Verify authenticator"}
+              </button>
+            )}
+
+            {mfa.allowedMethods.includes("passkey") && (
+              <button type="button" className="btn" disabled={loading} onClick={() => void handlePasskeyLogin()}>
+                {loading && mfa.preferredMethod === "passkey" ? <span className="spinner" /> : "Verify passkey"}
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="switch-link"
+              onClick={() => {
+                setMfa(null);
+                setTotpCode("");
+                setErrors({});
+              }}
+            >
+              Use another account
+            </button>
+          </form>
+        )}
 
         <p className="switch">
           No account yet?{" "}
           <Link href="/register" className="switch-link">Create one</Link>
         </p>
       </div>
-
-      <style>{`
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        :root {
-          --bg: #0a0f0a; --surface: #111811; --border: #1e2b1e;
-          --green: #4ade80; --green-dim: #166534; --green-glow: rgba(74,222,128,0.1);
-          --text: #f0fdf0; --muted: #6b7c6b; --error: #f87171;
-          --font-display: 'Georgia', serif;
-          --font-body: 'Helvetica Neue', Helvetica, sans-serif;
-        }
-        body { background: var(--bg); color: var(--text); font-family: var(--font-body); }
-
-        .page {
-          min-height: 100vh; display: flex; align-items: center; justify-content: center;
-          padding: 2rem;
-          background: radial-gradient(ellipse at 60% 20%, rgba(74,222,128,0.06) 0%, transparent 60%);
-        }
-        .card {
-          width: 100%; max-width: 420px;
-          background: var(--surface); border: 1px solid var(--border);
-          border-radius: 16px; padding: 2.5rem;
-          display: flex; flex-direction: column; gap: 1.5rem;
-          animation: fadeUp 0.5s ease both;
-        }
-        .logo {
-          font-family: var(--font-display); font-size: 1.2rem;
-          color: var(--green); text-decoration: none; width: fit-content;
-        }
-        .title { font-family: var(--font-display); font-size: 1.8rem; color: var(--text); }
-        .sub { font-size: 0.88rem; color: var(--muted); margin-top: -1rem; }
-
-        .form { display: flex; flex-direction: column; gap: 1.25rem; }
-        .field { display: flex; flex-direction: column; gap: 0.4rem; }
-        .label { font-size: 0.82rem; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
-        .label-row { display: flex; justify-content: space-between; align-items: center; }
-        .forgot { font-size: 0.78rem; color: var(--muted); cursor: pointer; transition: color 0.2s; }
-        .forgot:hover { color: var(--green); }
-
-        .input {
-          background: var(--bg); border: 1px solid var(--border);
-          border-radius: 8px; padding: 0.65rem 0.9rem;
-          color: var(--text); font-size: 0.92rem; font-family: var(--font-body);
-          outline: none; transition: border-color 0.2s, box-shadow 0.2s; width: 100%;
-        }
-        .input::placeholder { color: var(--muted); }
-        .input:focus { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-glow); }
-        .input-error { border-color: var(--error) !important; }
-        .error { font-size: 0.78rem; color: var(--error); }
-
-        .btn {
-          background: var(--green); color: #0a0f0a;
-          border: none; border-radius: 8px; padding: 0.8rem;
-          font-size: 0.95rem; font-weight: 700; cursor: pointer;
-          transition: opacity 0.2s, transform 0.2s; margin-top: 0.25rem;
-          display: flex; align-items: center; justify-content: center; min-height: 44px;
-        }
-        .btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-        .spinner {
-          width: 18px; height: 18px; border: 2px solid #0a0f0a;
-          border-top-color: transparent; border-radius: 50%;
-          animation: spin 0.7s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        .switch { font-size: 0.85rem; color: var(--muted); text-align: center; }
-        .switch-link { color: var(--green); text-decoration: none; font-weight: 600; }
-        .switch-link:hover { text-decoration: underline; }
-
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(20px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
     </main>
   );
+}
+
+function normalizeCredentialRequestOptions(raw: unknown): CredentialRequestOptions {
+  const options = unwrapPublicKeyOptions(raw) as PublicKeyCredentialRequestOptions;
+  return {
+    publicKey: {
+      ...options,
+      challenge: base64UrlToArrayBuffer(options.challenge as unknown as string),
+      allowCredentials: options.allowCredentials?.map((credential) => ({
+        ...credential,
+        id: base64UrlToArrayBuffer(credential.id as unknown as string),
+      })),
+    },
+  };
+}
+
+function unwrapPublicKeyOptions(raw: unknown): unknown {
+  if (raw && typeof raw === "object" && "publicKey" in raw) {
+    return (raw as { publicKey: unknown }).publicKey;
+  }
+  return raw;
+}
+
+function base64UrlToArrayBuffer(value: string): ArrayBuffer {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+  const binary = window.atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
 }

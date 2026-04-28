@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { ApiError, getProfile } from "@/lib/api";
 import { clearDraftProfile, getDraftProfile, setDraftProfile } from "@/lib/session";
 import { sanitizeProfile } from "@/lib/profile-normalization";
-import { UserProfile } from "@/lib/types";
+import { UserProfile, UserProfileResponse } from "@/lib/types";
 import { ProfileErrors, validateStep } from "@/lib/validation";
 
 const defaultProfile: UserProfile = {
@@ -77,6 +78,23 @@ function mergeWithDefaultProfile(saved: Partial<UserProfile>): UserProfile {
   };
 }
 
+function profileResponseToFormData(profile: UserProfileResponse): UserProfile {
+  return mergeWithDefaultProfile({
+    personal: profile.personal,
+    lifestyle: profile.lifestyle,
+    preferences: profile.preferences,
+    constraints: {
+      allergies: profile.constraints.allergies,
+      conditions: profile.constraints.conditions,
+      excludedIngredients: profile.constraints.excludedIngredients,
+      hasChronicDisease: profile.constraints.hasChronicDisease,
+      chronicDiseases: profile.constraints.chronicDiseases,
+      takesMedication: profile.constraints.takesMedication,
+      medications: profile.constraints.medicationsRedacted ? "" : profile.constraints.medications,
+    },
+  });
+}
+
 export function useProfileForm() {
   const [step, setStep] = useState(0);
   const [data, setData] = useState<UserProfile>(() => {
@@ -84,10 +102,44 @@ export function useProfileForm() {
     return saved ? mergeWithDefaultProfile(saved) : defaultProfile;
   });
   const [errors, setErrors] = useState<ProfileErrors>({});
+  const [loadingSavedProfile, setLoadingSavedProfile] = useState(true);
+  const [loadSavedProfileError, setLoadSavedProfileError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraftProfile(data);
   }, [data]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSavedProfile = async () => {
+      try {
+        const profile = await getProfile({ includeSensitive: true });
+        if (!cancelled) {
+          setData(profileResponseToFormData(profile));
+          setErrors({});
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        if (error instanceof ApiError && (error.status === 401 || error.status === 404)) {
+          return;
+        }
+        setLoadSavedProfileError("Impossible de precharger le profil sauvegarde.");
+      } finally {
+        if (!cancelled) {
+          setLoadingSavedProfile(false);
+        }
+      }
+    };
+
+    void loadSavedProfile();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const next = () => {
     const sanitized = sanitizeProfile(data);
@@ -118,6 +170,8 @@ export function useProfileForm() {
     data,
     setData,
     errors,
+    loadingSavedProfile,
+    loadSavedProfileError,
     next,
     back,
     reset,

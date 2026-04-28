@@ -20,7 +20,7 @@ func NewProfileRepository(db *gorm.DB) *ProfileRepository {
 func (r *ProfileRepository) UpsertProfile(ctx context.Context, profile *models.Profile) error {
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"age", "sex", "weight", "height", "profession", "city", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"age", "sex", "weight", "height", "profession", "profession_index", "city", "city_index", "updated_at"}),
 	}).Create(profile).Error
 }
 
@@ -73,7 +73,7 @@ func (r *ProfileRepository) UpsertPreferences(ctx context.Context, preferences *
 func (r *ProfileRepository) UpsertConstraints(ctx context.Context, constraints *models.Constraints) error {
 	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"has_chronic_disease", "takes_medication", "medications", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"has_chronic_disease", "takes_medication", "medications", "medications_index", "updated_at"}),
 	}).Create(constraints).Error; err != nil {
 		return err
 	}

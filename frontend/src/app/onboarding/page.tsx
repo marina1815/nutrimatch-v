@@ -18,7 +18,17 @@ const steps = ["Infos personnelles", "Mode de vie", "Preferences", "Sante & cont
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { step, data, setData, errors, next, back, reset } = useProfileForm();
+  const {
+    step,
+    data,
+    setData,
+    errors,
+    loadingSavedProfile,
+    loadSavedProfileError,
+    next,
+    back,
+    reset,
+  } = useProfileForm();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -52,6 +62,20 @@ export default function OnboardingPage() {
     }
   };
 
+  if (loadingSavedProfile) {
+    return (
+      <main className="nm-page">
+        <Card>
+          <div className="nm-header">
+            <span className="nm-logo">NutriMatch</span>
+            <h1 className="nm-title">Preparation du formulaire</h1>
+            <p className="nm-sub">On verifie s'il existe deja un profil pour eviter de tout ressaisir.</p>
+          </div>
+        </Card>
+      </main>
+    );
+  }
+
   return (
     <main className="nm-page">
       <Card>
@@ -61,6 +85,7 @@ export default function OnboardingPage() {
           <p className="nm-sub">
             Etape {step + 1} sur 4 - {steps[step]}
           </p>
+          {loadSavedProfileError && <p className="nm-error">{loadSavedProfileError}</p>}
         </div>
 
         <div className="nm-progress">

@@ -65,6 +65,9 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *securi
 		v1.GET("/auth/oidc/callback", auth.OIDCCallback)
 		v1.POST("/auth/register", authOriginGuard, csrfGuard, auth.Register)
 		v1.POST("/auth/login", authOriginGuard, csrfGuard, auth.Login)
+		v1.POST("/auth/mfa/login/totp", authOriginGuard, csrfGuard, auth.CompleteMFALoginTOTP)
+		v1.POST("/auth/mfa/login/passkeys/options", authOriginGuard, csrfGuard, auth.BeginMFALoginPasskey)
+		v1.POST("/auth/mfa/login/passkeys/finish", authOriginGuard, csrfGuard, auth.CompleteMFALoginPasskey)
 		v1.POST("/auth/refresh", authOriginGuard, csrfGuard, auth.Refresh)
 		v1.POST("/auth/logout", authOriginGuard, csrfGuard, auth.Logout)
 
@@ -77,6 +80,7 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *securi
 		protected.POST("/auth/mfa/totp/setup", authOriginGuard, csrfGuard, auth.BeginTOTPSetup)
 		protected.POST("/auth/mfa/totp/confirm", authOriginGuard, csrfGuard, auth.ConfirmTOTP)
 		protected.POST("/auth/mfa/totp/disable", authOriginGuard, csrfGuard, auth.DisableTOTP)
+		protected.POST("/auth/mfa/preference", authOriginGuard, csrfGuard, auth.SetMFAPreference)
 		protected.POST("/auth/mfa/passkeys/registration/options", authOriginGuard, csrfGuard, auth.BeginPasskeyRegistration)
 		protected.POST("/auth/mfa/passkeys/registration/finish", authOriginGuard, csrfGuard, auth.FinishPasskeyRegistration)
 		protected.POST("/auth/mfa/passkeys/authentication/options", authOriginGuard, csrfGuard, auth.BeginPasskeyAuthentication)

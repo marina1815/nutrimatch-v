@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -38,6 +39,15 @@ type registerRequest struct {
 type loginRequest struct {
 	Email    string `json:"email" validate:"required,email"`
 	Password string `json:"password" validate:"required,max=128"`
+}
+
+type mfaLoginTOTPRequest struct {
+	ChallengeID string `json:"challengeId" validate:"required,uuid4"`
+	Code        string `json:"code" validate:"required,len=6,numeric"`
+}
+
+type mfaPreferenceRequest struct {
+	PreferredMethod string `json:"preferredMethod" validate:"omitempty,oneof=totp passkey"`
 }
 
 type changePasswordRequest struct {
@@ -84,13 +94,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 
 	access, accessExp, refresh, refreshExp, err := h.Auth.Register(c.Request.Context(), user, req.Password, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
+		status := http.StatusBadRequest
+		code := "REGISTER_FAILED"
+		message := "register failed"
+		reason := "registration_failed"
+		if errors.Is(err, repository.ErrDuplicate) {
+			status = http.StatusConflict
+			code = "USER_ALREADY_EXISTS"
+			message = "user already exists"
+			reason = "user_already_exists"
+		}
 		recordAudit(c, h.Audit, services.AuditRecord{
 			EventType:    "auth.register",
 			ResourceType: "identity.user",
 			Outcome:      "failed",
-			Details:      map[string]any{"reason": "registration_failed"},
+			Details:      map[string]any{"reason": reason},
 		})
-		respondError(c, http.StatusBadRequest, "REGISTER_FAILED", "register failed")
+		respondError(c, status, code, message)
 		return
 	}
 
@@ -129,7 +149,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	access, accessExp, refresh, refreshExp, err := h.Auth.Login(c.Request.Context(), req.Email, req.Password, c.Request.UserAgent(), c.ClientIP())
+	user, err := h.Auth.AuthenticatePrimary(c.Request.Context(), req.Email, req.Password, c.ClientIP())
 	if err != nil {
 		status := http.StatusUnauthorized
 		errorMessage := "invalid credentials"
@@ -153,6 +173,65 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	if h.MFA != nil {
+		status, statusErr := h.MFA.Status(c.Request.Context(), user.ID)
+		if statusErr != nil {
+			recordAudit(c, h.Audit, services.AuditRecord{
+				UserID:       user.ID,
+				EventType:    "auth.login",
+				ResourceType: "identity.session",
+				Outcome:      "failed",
+				Details:      map[string]any{"reason": "mfa_status_failed"},
+			})
+			respondError(c, http.StatusInternalServerError, "MFA_STATUS_FAILED", "mfa status failed")
+			return
+		}
+		if status.StepUpAvailable {
+			challenge, challengeErr := h.MFA.IssueLoginChallenge(c.Request.Context(), user, c.Request.UserAgent(), c.ClientIP())
+			if challengeErr != nil {
+				recordAudit(c, h.Audit, services.AuditRecord{
+					UserID:       user.ID,
+					EventType:    "auth.login",
+					ResourceType: "identity.mfa_challenge",
+					Outcome:      "failed",
+				})
+				respondError(c, http.StatusInternalServerError, "MFA_CHALLENGE_FAILED", "mfa challenge failed")
+				return
+			}
+			recordAudit(c, h.Audit, services.AuditRecord{
+				UserID:       user.ID,
+				EventType:    "auth.login.mfa_required",
+				ResourceType: "identity.mfa_challenge",
+				ResourceID:   challenge.ID,
+				Details: map[string]any{
+					"preferredMethod": challenge.PreferredMethod,
+					"allowedMethods":  challenge.AllowedMethods,
+				},
+			})
+			respondOK(c, http.StatusOK, gin.H{
+				"mfa_required":     true,
+				"challenge_id":     challenge.ID,
+				"preferred_method": challenge.PreferredMethod,
+				"allowed_methods":  challenge.AllowedMethods,
+				"expires_at":       challenge.ExpiresAt.Format(time.RFC3339),
+			})
+			return
+		}
+	}
+
+	access, accessExp, refresh, refreshExp, err := h.Auth.IssueSession(c.Request.Context(), user.ID, "local", c.Request.UserAgent(), c.ClientIP())
+	if err != nil {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       user.ID,
+			EventType:    "auth.login",
+			ResourceType: "identity.session",
+			Outcome:      "failed",
+			Details:      map[string]any{"reason": "session_issue_failed"},
+		})
+		respondError(c, http.StatusInternalServerError, "LOGIN_FAILED", "login failed")
+		return
+	}
+
 	setRefreshCookie(c, h.Cfg, refresh, refreshExp)
 	ensureCSRFCookie(c, h.Cfg, h.CSRF, h.Auth, access)
 	recordAudit(c, h.Audit, h.tokenAuditRecord(access, services.AuditRecord{
@@ -160,6 +239,111 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		ResourceType: "identity.session",
 	}))
 	respondOK(c, http.StatusOK, tokenResponse(access, accessExp))
+}
+
+func (h *AuthHandler) CompleteMFALoginTOTP(c *gin.Context) {
+	var req mfaLoginTOTPRequest
+	if err := bindStrictJSON(c, &req); err != nil || validation.Validate.Struct(req) != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_MFA_CHALLENGE", "invalid mfa challenge")
+		return
+	}
+	if h.MFA == nil {
+		respondError(c, http.StatusServiceUnavailable, "MFA_UNAVAILABLE", "mfa unavailable")
+		return
+	}
+
+	challenge, err := h.MFA.ConsumeLoginChallenge(c.Request.Context(), req.ChallengeID, "totp")
+	if err != nil {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			EventType:    "auth.login.mfa.totp",
+			ResourceType: "identity.mfa_challenge",
+			ResourceID:   req.ChallengeID,
+			Outcome:      "denied",
+			Details:      map[string]any{"reason": "challenge_invalid"},
+		})
+		respondError(c, http.StatusUnauthorized, "MFA_CHALLENGE_INVALID", "mfa challenge invalid")
+		return
+	}
+	if err := h.MFA.VerifyTOTP(c.Request.Context(), challenge.UserID, req.Code); err != nil {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       challenge.UserID,
+			EventType:    "auth.login.mfa.totp",
+			ResourceType: "identity.mfa_challenge",
+			ResourceID:   req.ChallengeID,
+			Outcome:      "denied",
+			Details:      map[string]any{"reason": "totp_invalid"},
+		})
+		respondError(c, http.StatusUnauthorized, "MFA_VERIFICATION_FAILED", "mfa verification failed")
+		return
+	}
+	h.issueMFALoginSession(c, challenge.UserID, "local+mfa:totp", "auth.login.mfa.totp")
+}
+
+func (h *AuthHandler) BeginMFALoginPasskey(c *gin.Context) {
+	var req struct {
+		ChallengeID string `json:"challengeId" validate:"required,uuid4"`
+	}
+	if err := bindStrictJSON(c, &req); err != nil || validation.Validate.Struct(req) != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_MFA_CHALLENGE", "invalid mfa challenge")
+		return
+	}
+	if h.MFA == nil {
+		respondError(c, http.StatusServiceUnavailable, "MFA_UNAVAILABLE", "mfa unavailable")
+		return
+	}
+	challenge, err := h.MFA.GetLoginChallenge(c.Request.Context(), req.ChallengeID)
+	if err != nil || !containsString(challenge.AllowedMethods, "passkey") {
+		respondError(c, http.StatusUnauthorized, "MFA_CHALLENGE_INVALID", "mfa challenge invalid")
+		return
+	}
+	options, passkeyChallengeID, err := h.MFA.BeginPasskeyAuthentication(c.Request.Context(), challenge.UserID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "PASSKEY_BEGIN_FAILED", "passkey begin failed")
+		return
+	}
+	recordAudit(c, h.Audit, services.AuditRecord{
+		UserID:       challenge.UserID,
+		EventType:    "auth.login.mfa.passkey.begin",
+		ResourceType: "identity.mfa_challenge",
+		ResourceID:   req.ChallengeID,
+	})
+	respondOK(c, http.StatusOK, gin.H{"challengeId": passkeyChallengeID, "options": options})
+}
+
+func (h *AuthHandler) CompleteMFALoginPasskey(c *gin.Context) {
+	challengeID := strings.TrimSpace(c.Query("challengeId"))
+	passkeyChallengeID := strings.TrimSpace(c.Query("passkeyChallengeId"))
+	if challengeID == "" || passkeyChallengeID == "" {
+		respondError(c, http.StatusBadRequest, "INVALID_MFA_CHALLENGE", "invalid mfa challenge")
+		return
+	}
+	if h.MFA == nil {
+		respondError(c, http.StatusServiceUnavailable, "MFA_UNAVAILABLE", "mfa unavailable")
+		return
+	}
+
+	challenge, err := h.MFA.GetLoginChallenge(c.Request.Context(), challengeID)
+	if err != nil || !containsString(challenge.AllowedMethods, "passkey") {
+		respondError(c, http.StatusUnauthorized, "MFA_CHALLENGE_INVALID", "mfa challenge invalid")
+		return
+	}
+	if err := h.MFA.FinishPasskeyAuthentication(c.Request.Context(), challenge.UserID, passkeyChallengeID, c.Request); err != nil {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       challenge.UserID,
+			EventType:    "auth.login.mfa.passkey.finish",
+			ResourceType: "identity.mfa_challenge",
+			ResourceID:   challengeID,
+			Outcome:      "denied",
+			Details:      map[string]any{"reason": "passkey_invalid"},
+		})
+		respondError(c, http.StatusUnauthorized, "MFA_VERIFICATION_FAILED", "mfa verification failed")
+		return
+	}
+	if _, err := h.MFA.ConsumeLoginChallenge(c.Request.Context(), challengeID, "passkey"); err != nil {
+		respondError(c, http.StatusUnauthorized, "MFA_CHALLENGE_INVALID", "mfa challenge invalid")
+		return
+	}
+	h.issueMFALoginSession(c, challenge.UserID, "local+mfa:passkey", "auth.login.mfa.passkey.finish")
 }
 
 func (h *AuthHandler) Refresh(c *gin.Context) {
@@ -227,6 +411,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	}
 	clearRefreshCookie(c, h.Cfg)
 	clearCSRFCookie(c, h.Cfg)
+	c.Writer.Header().Set("Clear-Site-Data", `"cache", "storage"`)
 	recordAudit(c, h.Audit, services.AuditRecord{
 		EventType:    "auth.logout",
 		ResourceType: "identity.session",
@@ -455,6 +640,37 @@ func (h *AuthHandler) MFAStatus(c *gin.Context) {
 	respondOK(c, http.StatusOK, status)
 }
 
+func (h *AuthHandler) SetMFAPreference(c *gin.Context) {
+	var req mfaPreferenceRequest
+	if err := bindStrictJSON(c, &req); err != nil || validation.Validate.Struct(req) != nil {
+		respondError(c, http.StatusBadRequest, "INVALID_MFA_PREFERENCE", "invalid mfa preference")
+		return
+	}
+	if h.MFA == nil {
+		respondError(c, http.StatusServiceUnavailable, "MFA_UNAVAILABLE", "mfa unavailable")
+		return
+	}
+	userID := c.GetString("user_id")
+	if err := h.MFA.SetPreferredMethod(c.Request.Context(), userID, req.PreferredMethod); err != nil {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    "auth.mfa.preference",
+			ResourceType: "identity.mfa",
+			Outcome:      "denied",
+			Details:      map[string]any{"reason": "method_not_available"},
+		})
+		respondError(c, http.StatusBadRequest, "MFA_METHOD_NOT_AVAILABLE", "mfa method not available")
+		return
+	}
+	recordAudit(c, h.Audit, services.AuditRecord{
+		UserID:       userID,
+		EventType:    "auth.mfa.preference",
+		ResourceType: "identity.mfa",
+		Details:      map[string]any{"preferredMethod": req.PreferredMethod},
+	})
+	respondNoContent(c)
+}
+
 func (h *AuthHandler) BeginTOTPSetup(c *gin.Context) {
 	setup, err := h.MFA.BeginTOTPSetup(c.Request.Context(), c.GetString("user_id"))
 	if err != nil {
@@ -659,6 +875,28 @@ func (h *AuthHandler) RevokeSession(c *gin.Context) {
 	respondNoContent(c)
 }
 
+func (h *AuthHandler) issueMFALoginSession(c *gin.Context, userID, authMethod, eventType string) {
+	access, accessExp, refresh, refreshExp, err := h.Auth.IssueSession(c.Request.Context(), userID, authMethod, c.Request.UserAgent(), c.ClientIP())
+	if err != nil {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    eventType,
+			ResourceType: "identity.session",
+			Outcome:      "failed",
+		})
+		respondError(c, http.StatusInternalServerError, "LOGIN_FAILED", "login failed")
+		return
+	}
+	setRefreshCookie(c, h.Cfg, refresh, refreshExp)
+	ensureCSRFCookie(c, h.Cfg, h.CSRF, h.Auth, access)
+	recordAudit(c, h.Audit, h.tokenAuditRecord(access, services.AuditRecord{
+		UserID:       userID,
+		EventType:    eventType,
+		ResourceType: "identity.session",
+	}))
+	respondOK(c, http.StatusOK, tokenResponse(access, accessExp))
+}
+
 func (h *AuthHandler) tokenAuditRecord(access string, record services.AuditRecord) services.AuditRecord {
 	if h == nil || h.Auth == nil || h.Auth.Tokens == nil {
 		return record
@@ -678,6 +916,15 @@ func (h *AuthHandler) tokenAuditRecord(access string, record services.AuditRecor
 		record.ResourceID = claims.SessionID
 	}
 	return record
+}
+
+func containsString(values models.StringSlice, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *AuthHandler) validateRefreshCSRF(c *gin.Context, refreshToken string) bool {

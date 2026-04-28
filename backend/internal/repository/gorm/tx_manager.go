@@ -29,6 +29,7 @@ func (m *TxManager) WithinTransaction(ctx context.Context, fn func(repository.Re
 			AuthFailures:       NewAuthFailureRepository(tx),
 			RateLimitBuckets:   NewRateLimitBucketRepository(tx),
 			ExternalIdentities: NewExternalIdentityRepository(tx),
+			LocalRecipes:       NewLocalRecipeRepository(tx),
 		}
 		return fn(repos)
 	})

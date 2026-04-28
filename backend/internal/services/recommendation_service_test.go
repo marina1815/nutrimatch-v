@@ -51,6 +51,13 @@ func (r *fakeUserRepository) UpdatePasswordHash(_ context.Context, _ string, pas
 	return nil
 }
 
+func (r *fakeUserRepository) UpdatePreferredMFAMethod(_ context.Context, _ string, method string) error {
+	if r.user != nil {
+		r.user.PreferredMFAMethod = method
+	}
+	return nil
+}
+
 type fakeProfileRepository struct {
 	profile           *models.Profile
 	lifestyle         *models.Lifestyle
@@ -194,9 +201,11 @@ func (m *fakeTxManager) WithinTransaction(_ context.Context, fn func(repository.
 }
 
 type fakeRecipeSearcher struct {
-	called bool
-	resp   *spoonacular.SearchResponse
-	err    error
+	called    bool
+	opts      []spoonacular.SearchOptions
+	responses []*spoonacular.SearchResponse
+	resp      *spoonacular.SearchResponse
+	err       error
 }
 
 type fakeAITextGenerator struct {
@@ -205,10 +214,16 @@ type fakeAITextGenerator struct {
 	prompt string
 }
 
-func (s *fakeRecipeSearcher) Search(_ context.Context, _ spoonacular.SearchOptions) (*spoonacular.SearchResponse, error) {
+func (s *fakeRecipeSearcher) Search(_ context.Context, opts spoonacular.SearchOptions) (*spoonacular.SearchResponse, error) {
 	s.called = true
+	s.opts = append(s.opts, opts)
 	if s.err != nil {
 		return nil, s.err
+	}
+	if len(s.responses) > 0 {
+		resp := s.responses[0]
+		s.responses = s.responses[1:]
+		return resp, nil
 	}
 	if s.resp != nil {
 		return s.resp, nil
@@ -228,6 +243,94 @@ func TestBuildQuery(t *testing.T) {
 	query := buildQuery([]string{"oriental"}, []string{"chicken"})
 	if query == "" {
 		t.Fatalf("expected query")
+	}
+}
+
+func TestFallbackSearchPlanKeepsSafetyExclusionsOnly(t *testing.T) {
+	plans := buildSearchPlans(
+		&models.Preferences{
+			Likes:    models.StringSlice{"chicken"},
+			Dislikes: models.StringSlice{"mushroom"},
+		},
+		&models.Constraints{
+			Allergies: models.StringSlice{"peanut"},
+		},
+		&models.NutritionProfile{
+			DerivedExcluded: models.StringSlice{"grapefruit"},
+		},
+		&SimilaritySignals{},
+	)
+
+	var fallback searchPlan
+	for _, plan := range plans {
+		if plan.Name == "fallback_goal_candidates" {
+			fallback = plan
+			break
+		}
+	}
+	if !fallback.Fallback {
+		t.Fatalf("expected fallback plan to be present")
+	}
+	if containsString(fallback.Exclude, "mushroom") {
+		t.Fatalf("expected fallback to drop soft dislikes from provider search")
+	}
+	if !containsString(fallback.Exclude, "peanut") || !containsString(fallback.Exclude, "grapefruit") {
+		t.Fatalf("expected fallback to keep safety exclusions, got %v", fallback.Exclude)
+	}
+}
+
+func TestBuildSearchOptionsFallbackRelaxesProviderBoundsButKeepsSafetyControls(t *testing.T) {
+	opts := buildSearchOptions(
+		searchPlan{
+			Name:             "fallback_goal_candidates",
+			Query:            "high protein",
+			Include:          []string{"chicken"},
+			Exclude:          []string{"mushroom", "peanut", "grapefruit"},
+			HardExclude:      []string{"peanut", "grapefruit"},
+			MealTypes:        []string{"main course"},
+			PreferredCuisine: []string{"mediterranean"},
+			Fallback:         true,
+			RelaxTaste:       true,
+			RelaxNutrition:   true,
+			Number:           25,
+		},
+		&models.Lifestyle{MaxReadyTime: 25},
+		&models.Preferences{ExcludedCuisines: models.StringSlice{"american"}},
+		&models.Constraints{Allergies: models.StringSlice{"peanut"}},
+		&models.NutritionProfile{
+			MaxMealCalories:    600,
+			MinProteinPerMeal:  40,
+			MaxCarbsPerMeal:    50,
+			MaxFatPerMeal:      20,
+			MaxSugarPerMeal:    10,
+			MaxSodiumMgPerMeal: 600,
+		},
+		nil,
+	)
+
+	if len(opts.IncludeIngredients) != 0 {
+		t.Fatalf("expected fallback to drop include ingredients, got %v", opts.IncludeIngredients)
+	}
+	if containsString(opts.ExcludeIngredients, "mushroom") {
+		t.Fatalf("expected fallback to drop soft dislikes from provider exclusions")
+	}
+	if !containsString(opts.ExcludeIngredients, "peanut") || !containsString(opts.ExcludeIngredients, "grapefruit") {
+		t.Fatalf("expected fallback to keep hard exclusions, got %v", opts.ExcludeIngredients)
+	}
+	if opts.Type != "" || len(opts.Cuisine) != 0 || len(opts.ExcludeCuisine) != 0 {
+		t.Fatalf("expected fallback to relax taste filters, got type=%q cuisine=%v excludeCuisine=%v", opts.Type, opts.Cuisine, opts.ExcludeCuisine)
+	}
+	if opts.MaxCalories != 0 || opts.MinProtein != 0 || opts.MaxCarbs != 0 || opts.MaxFat != 0 || opts.MaxSugar != 0 || opts.MaxSodium != 0 {
+		t.Fatalf("expected fallback to omit provider nutrient bounds, got %+v", opts)
+	}
+	if opts.MaxReadyTime != 60 {
+		t.Fatalf("expected fallback to relax very short ready time to 60, got %d", opts.MaxReadyTime)
+	}
+	if opts.Number != 25 {
+		t.Fatalf("expected fallback candidate pool size 25, got %d", opts.Number)
+	}
+	if !containsString(opts.Intolerances, "peanut") {
+		t.Fatalf("expected allergy intolerance to remain in provider search, got %v", opts.Intolerances)
 	}
 }
 
@@ -313,6 +416,7 @@ func TestRecommendationServiceRejectsForeignProfileID(t *testing.T) {
 func TestEvaluateCandidateRejectsMissingRequiredMedicalTag(t *testing.T) {
 	service := &RecommendationService{}
 	candidate := service.evaluateCandidate(
+		context.Background(),
 		"run-1",
 		"user-1",
 		"profile-1",
@@ -365,6 +469,7 @@ func TestEvaluateCandidateRejectsMissingRequiredMedicalTag(t *testing.T) {
 func TestEvaluateCandidateRejectsMedicalProteinCeiling(t *testing.T) {
 	service := &RecommendationService{}
 	candidate := service.evaluateCandidate(
+		context.Background(),
 		"run-1",
 		"user-1",
 		"profile-1",
@@ -511,14 +616,107 @@ func TestGetRecommendationsGracefullyHandlesRecipeUpstreamFailure(t *testing.T) 
 	if err != nil {
 		t.Fatalf("expected graceful no-match response on upstream failure, got %v", err)
 	}
-	if len(response.Meals) != 0 {
-		t.Fatalf("expected no meals when upstream is unavailable, got %d", len(response.Meals))
+	if len(response.Meals) == 0 {
+		t.Fatalf("expected local safety fallback meals when upstream is unavailable")
 	}
-	if traceRepo.run == nil || traceRepo.run.Status != "no_matches" {
-		t.Fatalf("expected persisted no_matches run, got %+v", traceRepo.run)
+	if response.Meals[0].Source != "local_safety_fallback" {
+		t.Fatalf("expected local safety fallback source, got %q", response.Meals[0].Source)
 	}
-	if traceRepo.run.ExternalTrace == nil || traceRepo.run.ExternalTrace["strict_profile"] == nil {
+	if traceRepo.run == nil || traceRepo.run.Status != "completed" {
+		t.Fatalf("expected persisted completed run, got %+v", traceRepo.run)
+	}
+	if traceRepo.run.ExternalTrace == nil || traceRepo.run.ExternalTrace["profile_query"] == nil {
 		t.Fatalf("expected external trace to capture upstream failure")
+	}
+	if traceRepo.run.ExternalTrace["local_safety_fallback"] == nil {
+		t.Fatalf("expected external trace to capture local safety fallback")
+	}
+}
+
+func TestGetRecommendationsUsesFallbackWhenPrimaryCandidatesAreRejected(t *testing.T) {
+	userRepo := &fakeUserRepository{user: &models.User{ID: "user-1", FullName: "User"}}
+	profileRepo := &fakeProfileRepository{
+		profile:     &models.Profile{ID: "profile-1", UserID: "user-1", Age: 25},
+		lifestyle:   &models.Lifestyle{UserID: "user-1", Goal: "weight_loss", ActivityLevel: "light", MaxReadyTime: 30},
+		preferences: &models.Preferences{UserID: "user-1", Likes: models.StringSlice{"chicken"}, MealsPerDay: 3},
+		constraints: &models.Constraints{UserID: "user-1"},
+		nutritionProfile: &models.NutritionProfile{
+			ID:                 "nutrition-1",
+			UserID:             "user-1",
+			ProfileID:          "profile-1",
+			CalculatedAt:       time.Now(),
+			MaxMealCalories:    650,
+			MinProteinPerMeal:  20,
+			MaxCarbsPerMeal:    70,
+			MaxFatPerMeal:      25,
+			MaxSugarPerMeal:    20,
+			MaxSodiumMgPerMeal: 900,
+		},
+	}
+	traceRepo := &memoryTraceRepositoryForService{}
+	searcher := &fakeRecipeSearcher{
+		responses: []*spoonacular.SearchResponse{
+			{
+				Results: []spoonacular.Recipe{
+					{
+						ID:      1,
+						Title:   "Oversized Chicken Bowl",
+						Summary: "Too large for the requested profile.",
+						Nutrition: spoonacular.Nutrition{Nutrients: []spoonacular.Nutrient{
+							{Name: "Calories", Amount: 980},
+							{Name: "Protein", Amount: 40},
+							{Name: "Carbohydrates", Amount: 60},
+							{Name: "Fat", Amount: 20},
+							{Name: "Sugar", Amount: 8},
+							{Name: "Sodium", Amount: 500},
+						}},
+						ExtendedIngredients: []spoonacular.Ingredient{{Name: "chicken"}},
+					},
+				},
+			},
+			{},
+			{
+				Results: []spoonacular.Recipe{
+					{
+						ID:      2,
+						Title:   "Lean Chicken Salad",
+						Summary: "Lean chicken with greens.",
+						Nutrition: spoonacular.Nutrition{Nutrients: []spoonacular.Nutrient{
+							{Name: "Calories", Amount: 420},
+							{Name: "Protein", Amount: 34},
+							{Name: "Carbohydrates", Amount: 28},
+							{Name: "Fat", Amount: 12},
+							{Name: "Sugar", Amount: 7},
+							{Name: "Sodium", Amount: 360},
+						}},
+						ExtendedIngredients: []spoonacular.Ingredient{{Name: "chicken"}, {Name: "lettuce"}},
+					},
+				},
+			},
+		},
+	}
+	service := &RecommendationService{
+		Profiles:     &ProfileService{Users: userRepo, Profiles: profileRepo},
+		Recipes:      searcher,
+		MedicalRules: &fakeMedicalRuleRepository{},
+		Traces:       traceRepo,
+	}
+
+	response, err := service.GetRecommendations(context.Background(), "user-1", "profile-1", "req-1")
+	if err != nil {
+		t.Fatalf("expected recommendations with fallback, got %v", err)
+	}
+	if len(response.Meals) != 1 || response.Meals[0].ID != "2" {
+		t.Fatalf("expected accepted fallback meal, got %+v", response.Meals)
+	}
+	if len(searcher.opts) != 3 {
+		t.Fatalf("expected two primary searches plus one fallback search, got %d", len(searcher.opts))
+	}
+	if searcher.opts[2].MaxCalories != 0 || searcher.opts[2].MinProtein != 0 {
+		t.Fatalf("expected fallback provider search to relax nutrient bounds, got %+v", searcher.opts[2])
+	}
+	if traceRepo.run == nil || traceRepo.run.SourceSummary["fallbackApplied"] != true {
+		t.Fatalf("expected trace to record fallback application, got %+v", traceRepo.run)
 	}
 }
 
@@ -604,6 +802,7 @@ func TestEnrichRecipesFromSearchPlanCarriesPlanAndCacheMetadata(t *testing.T) {
 func TestEvaluateCandidateCarriesEnrichmentProvenance(t *testing.T) {
 	service := &RecommendationService{}
 	candidate := service.evaluateCandidate(
+		context.Background(),
 		"run-1",
 		"user-1",
 		"profile-1",
@@ -722,4 +921,13 @@ func TestComputeDeterministicScoreRunsOnlyAfterHardFilterPass(t *testing.T) {
 	if len(passed.acceptedReasons) == 0 {
 		t.Fatalf("expected accepted reasons after deterministic scoring")
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

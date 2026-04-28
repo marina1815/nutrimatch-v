@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -19,6 +20,7 @@ import (
 
 var ErrMFAUnavailable = errors.New("mfa unavailable")
 var ErrMFAVerificationFailed = errors.New("mfa verification failed")
+var ErrMFAChallengeNotAllowed = errors.New("mfa challenge method not allowed")
 
 type MFAService struct {
 	Repo     repository.MFARepository
@@ -29,10 +31,12 @@ type MFAService struct {
 }
 
 type MFAStatus struct {
-	TOTPEnabled     bool `json:"totpEnabled"`
-	PasskeyEnabled  bool `json:"passkeyEnabled"`
-	PasskeyCount    int  `json:"passkeyCount"`
-	StepUpAvailable bool `json:"stepUpAvailable"`
+	TOTPEnabled     bool   `json:"totpEnabled"`
+	PasskeyEnabled  bool   `json:"passkeyEnabled"`
+	PasskeyCount    int    `json:"passkeyCount"`
+	StepUpAvailable bool   `json:"stepUpAvailable"`
+	PreferredMethod string `json:"preferredMethod"`
+	EffectiveMethod string `json:"effectiveMethod"`
 }
 
 type TOTPSetup struct {
@@ -45,6 +49,11 @@ func (s *MFAService) Status(ctx context.Context, userID string) (*MFAStatus, err
 		return &MFAStatus{}, nil
 	}
 	status := &MFAStatus{}
+	var user *models.User
+	var userErr error
+	if s.Users != nil {
+		user, userErr = s.Users.GetByID(ctx, userID)
+	}
 	if secret, err := s.Repo.GetTOTPSecret(ctx, userID); err == nil {
 		status.TOTPEnabled = secret.Enabled
 	}
@@ -55,7 +64,18 @@ func (s *MFAService) Status(ctx context.Context, userID string) (*MFAStatus, err
 	status.PasskeyCount = len(credentials)
 	status.PasskeyEnabled = len(credentials) > 0
 	status.StepUpAvailable = status.TOTPEnabled || status.PasskeyEnabled
+	if userErr == nil {
+		status.PreferredMethod = normalizeMFAMethod(user.PreferredMFAMethod)
+	}
+	status.EffectiveMethod = chooseMFAMethod(status.allowedMethods(), status.PreferredMethod)
 	return status, nil
+}
+
+type MFALoginChallenge struct {
+	ID              string    `json:"challengeId"`
+	PreferredMethod string    `json:"preferredMethod"`
+	AllowedMethods  []string  `json:"allowedMethods"`
+	ExpiresAt       time.Time `json:"expiresAt"`
 }
 
 func (s *MFAService) BeginTOTPSetup(ctx context.Context, userID string) (*TOTPSetup, error) {
@@ -81,7 +101,7 @@ func (s *MFAService) BeginTOTPSetup(ctx context.Context, userID string) (*TOTPSe
 	if err != nil {
 		return nil, err
 	}
-	ciphertext, err := s.Cipher.Encrypt(key.Secret())
+	ciphertext, err := s.Cipher.EncryptScoped("identity.totp_secrets.secret", key.Secret())
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +123,10 @@ func (s *MFAService) ConfirmTOTP(ctx context.Context, userID, code string) error
 	if !valid {
 		return ErrMFAVerificationFailed
 	}
-	return s.Repo.EnableTOTP(ctx, userID, time.Now().UTC())
+	if err := s.Repo.EnableTOTP(ctx, userID, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.ensurePreferredMethod(ctx, userID, "totp")
 }
 
 func (s *MFAService) VerifyTOTP(ctx context.Context, userID, code string) error {
@@ -121,7 +144,10 @@ func (s *MFAService) DisableTOTP(ctx context.Context, userID, code string) error
 	if err := s.VerifyTOTP(ctx, userID, code); err != nil {
 		return err
 	}
-	return s.Repo.DisableTOTP(ctx, userID)
+	if err := s.Repo.DisableTOTP(ctx, userID); err != nil {
+		return err
+	}
+	return s.repairPreferredMethod(ctx, userID)
 }
 
 func (s *MFAService) verifyTOTP(ctx context.Context, userID, code string, requireEnabled bool) (bool, error) {
@@ -135,7 +161,7 @@ func (s *MFAService) verifyTOTP(ctx context.Context, userID, code string, requir
 	if requireEnabled && !secretRecord.Enabled {
 		return false, ErrMFAVerificationFailed
 	}
-	secret, err := s.Cipher.Decrypt(secretRecord.SecretCiphertext)
+	secret, err := s.Cipher.DecryptScoped("identity.totp_secrets.secret", secretRecord.SecretCiphertext)
 	if err != nil {
 		return false, err
 	}
@@ -176,12 +202,15 @@ func (s *MFAService) FinishPasskeyRegistration(ctx context.Context, userID, chal
 	payload := map[string]any{}
 	raw, _ := json.Marshal(credential)
 	_ = json.Unmarshal(raw, &payload)
-	return s.Repo.CreateWebAuthnCredential(ctx, &models.WebAuthnCredential{
+	if err := s.Repo.CreateWebAuthnCredential(ctx, &models.WebAuthnCredential{
 		UserID:         userID,
 		CredentialID:   base64.RawURLEncoding.EncodeToString(credential.ID),
 		CredentialJSON: models.JSONMap(payload),
 		DisplayName:    displayName,
-	})
+	}); err != nil {
+		return err
+	}
+	return s.ensurePreferredMethod(ctx, userID, "passkey")
 }
 
 func (s *MFAService) BeginPasskeyAuthentication(ctx context.Context, userID string) (any, string, error) {
@@ -211,6 +240,168 @@ func (s *MFAService) FinishPasskeyAuthentication(ctx context.Context, userID, ch
 		return err
 	}
 	return s.Repo.UpdateWebAuthnCredentialUsed(ctx, base64.RawURLEncoding.EncodeToString(credential.ID), time.Now().UTC())
+}
+
+func (s *MFAService) IssueLoginChallenge(ctx context.Context, user *models.User, userAgent, ip string) (*MFALoginChallenge, error) {
+	if s == nil || s.Repo == nil || user == nil {
+		return nil, ErrMFAUnavailable
+	}
+	status, err := s.Status(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	allowed := status.allowedMethods()
+	if len(allowed) == 0 {
+		return nil, ErrMFAUnavailable
+	}
+	preferred := chooseMFAMethod(allowed, user.PreferredMFAMethod)
+	expiresAt := time.Now().UTC().Add(5 * time.Minute)
+	challenge := &models.MFALoginChallenge{
+		ID:              uuid.NewString(),
+		UserID:          user.ID,
+		PreferredMethod: preferred,
+		AllowedMethods:  models.StringSlice(allowed),
+		ExpiresAt:       expiresAt,
+		UserAgentHash:   security.HashFingerprint(userAgent),
+		IPHash:          security.HashFingerprint(ip),
+	}
+	if err := s.Repo.CreateMFALoginChallenge(ctx, challenge); err != nil {
+		return nil, err
+	}
+	return &MFALoginChallenge{
+		ID:              challenge.ID,
+		PreferredMethod: preferred,
+		AllowedMethods:  allowed,
+		ExpiresAt:       expiresAt,
+	}, nil
+}
+
+func (s *MFAService) GetLoginChallenge(ctx context.Context, challengeID string) (*models.MFALoginChallenge, error) {
+	if s == nil || s.Repo == nil {
+		return nil, ErrMFAUnavailable
+	}
+	return s.Repo.GetMFALoginChallenge(ctx, strings.TrimSpace(challengeID), time.Now().UTC())
+}
+
+func (s *MFAService) ConsumeLoginChallenge(ctx context.Context, challengeID, method string) (*models.MFALoginChallenge, error) {
+	if s == nil || s.Repo == nil {
+		return nil, ErrMFAUnavailable
+	}
+	challenge, err := s.Repo.ConsumeMFALoginChallenge(ctx, strings.TrimSpace(challengeID), time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if !methodAllowed(challenge.AllowedMethods, normalizeMFAMethod(method)) {
+		return nil, ErrMFAChallengeNotAllowed
+	}
+	return challenge, nil
+}
+
+func (s *MFAService) SetPreferredMethod(ctx context.Context, userID, method string) error {
+	if s == nil || s.Users == nil {
+		return ErrMFAUnavailable
+	}
+	method = normalizeMFAMethod(method)
+	status, err := s.Status(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if method != "" && !methodAllowed(models.StringSlice(status.allowedMethods()), method) {
+		return ErrMFAChallengeNotAllowed
+	}
+	return s.Users.UpdatePreferredMFAMethod(ctx, userID, method)
+}
+
+func (s *MFAService) ensurePreferredMethod(ctx context.Context, userID, method string) error {
+	if s == nil || s.Users == nil {
+		return ErrMFAUnavailable
+	}
+	user, err := s.Users.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if normalizeMFAMethod(user.PreferredMFAMethod) != "" {
+		return nil
+	}
+	return s.Users.UpdatePreferredMFAMethod(ctx, userID, normalizeMFAMethod(method))
+}
+
+func (s *MFAService) repairPreferredMethod(ctx context.Context, userID string) error {
+	if s == nil || s.Users == nil {
+		return ErrMFAUnavailable
+	}
+	user, err := s.Users.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	status, err := s.Status(ctx, userID)
+	if err != nil {
+		return err
+	}
+	current := normalizeMFAMethod(user.PreferredMFAMethod)
+	if current == "" || methodAllowed(models.StringSlice(status.allowedMethods()), current) {
+		return nil
+	}
+	return s.Users.UpdatePreferredMFAMethod(ctx, userID, chooseMFAMethod(status.allowedMethods(), ""))
+}
+
+func (s *MFAStatus) allowedMethods() []string {
+	if s == nil {
+		return nil
+	}
+	methods := []string{}
+	if s.TOTPEnabled {
+		methods = append(methods, "totp")
+	}
+	if s.PasskeyEnabled {
+		methods = append(methods, "passkey")
+	}
+	return methods
+}
+
+func chooseMFAMethod(allowed []string, preferred string) string {
+	preferred = normalizeMFAMethod(preferred)
+	for _, method := range allowed {
+		if normalizeMFAMethod(method) == preferred {
+			return preferred
+		}
+	}
+	if len(allowed) == 1 {
+		return normalizeMFAMethod(allowed[0])
+	}
+	for _, method := range allowed {
+		if normalizeMFAMethod(method) == "passkey" {
+			return "passkey"
+		}
+	}
+	if len(allowed) > 0 {
+		return normalizeMFAMethod(allowed[0])
+	}
+	return ""
+}
+
+func methodAllowed(allowed models.StringSlice, method string) bool {
+	method = normalizeMFAMethod(method)
+	if method == "" {
+		return false
+	}
+	for _, item := range allowed {
+		if normalizeMFAMethod(item) == method {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeMFAMethod(method string) string {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "totp", "authenticator":
+		return "totp"
+	case "passkey", "webauthn":
+		return "passkey"
+	default:
+		return ""
+	}
 }
 
 func (s *MFAService) storeChallenge(ctx context.Context, userID, kind string, sessionData *webauthn.SessionData) (string, error) {

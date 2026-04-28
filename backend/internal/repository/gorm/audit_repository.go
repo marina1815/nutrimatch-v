@@ -9,6 +9,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const auditChainAdvisoryLockID int64 = 71881294736001
+
 type AuditRepository struct {
 	db *gorm.DB
 }
@@ -32,6 +34,46 @@ func NewAuditRepository(db *gorm.DB) *AuditRepository {
 
 func (r *AuditRepository) Create(ctx context.Context, event *models.AuditEvent) error {
 	return r.db.WithContext(ctx).Create(event).Error
+}
+
+func (r *AuditRepository) AppendChained(ctx context.Context, event *models.AuditEvent, hash func(previousHash string, occurredAt time.Time) string) error {
+	if r.db.Dialector.Name() != "postgres" {
+		previousHash, err := r.LatestHash(ctx)
+		if err != nil {
+			return err
+		}
+		event.PreviousHash = previousHash
+		if event.OccurredAt.IsZero() {
+			event.OccurredAt = time.Now().UTC()
+		}
+		event.EventHash = hash(previousHash, event.OccurredAt.UTC())
+		return r.Create(ctx, event)
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", auditChainAdvisoryLockID).Error; err != nil {
+			return err
+		}
+
+		var latest models.AuditEvent
+		err := tx.
+			Select("event_hash").
+			Order("created_at DESC, id DESC").
+			First(&latest).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			event.PreviousHash = ""
+		} else if err != nil {
+			return err
+		} else {
+			event.PreviousHash = latest.EventHash
+		}
+
+		if event.OccurredAt.IsZero() {
+			event.OccurredAt = time.Now().UTC()
+		}
+		event.EventHash = hash(event.PreviousHash, event.OccurredAt.UTC())
+		return tx.Create(event).Error
+	})
 }
 
 func (r *AuditRepository) LatestHash(ctx context.Context) (string, error) {

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS identity.users (
     email text NOT NULL UNIQUE,
     password_hash text NOT NULL,
     full_name text NOT NULL,
+    preferred_mfa_method text NOT NULL DEFAULT '' CHECK (preferred_mfa_method IN ('', 'totp', 'passkey')),
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
     email_verified boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -75,6 +76,18 @@ CREATE TABLE IF NOT EXISTS identity.webauthn_challenges (
     session_data jsonb NOT NULL DEFAULT '{}',
     expires_at timestamptz NOT NULL,
     consumed_at timestamptz NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS identity.mfa_login_challenges (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    preferred_method text NOT NULL DEFAULT '' CHECK (preferred_method IN ('totp', 'passkey')),
+    allowed_methods jsonb NOT NULL DEFAULT '[]',
+    expires_at timestamptz NOT NULL,
+    consumed_at timestamptz NULL,
+    user_agent_hash text NOT NULL DEFAULT '',
+    ip_hash text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -194,7 +207,9 @@ CREATE TABLE IF NOT EXISTS health.profiles (
     weight numeric(6,2) NOT NULL CHECK (weight BETWEEN 20 AND 400),
     height numeric(6,2) NOT NULL CHECK (height BETWEEN 80 AND 250),
     profession text NOT NULL,
+    profession_index text NOT NULL DEFAULT '',
     city text NOT NULL,
+    city_index text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -224,6 +239,7 @@ CREATE TABLE IF NOT EXISTS health.constraints (
     has_chronic_disease boolean NOT NULL DEFAULT false,
     takes_medication boolean NOT NULL DEFAULT false,
     medications text NOT NULL DEFAULT '',
+    medications_index text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -457,6 +473,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_idle_expires_at ON identity.sessions(idl
 CREATE INDEX IF NOT EXISTS idx_external_identities_user_id ON identity.external_identities(user_id);
 CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_user_id ON identity.webauthn_credentials(user_id);
 CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_user_kind ON identity.webauthn_challenges(user_id, kind, expires_at);
+CREATE INDEX IF NOT EXISTS idx_mfa_login_challenges_user ON identity.mfa_login_challenges(user_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_ingredient_aliases_key ON catalog.ingredient_aliases(ingredient_key);
 CREATE INDEX IF NOT EXISTS idx_intolerance_aliases_key ON catalog.intolerance_aliases(intolerance_key);
 CREATE INDEX IF NOT EXISTS idx_condition_aliases_key ON catalog.condition_aliases(condition_key);
@@ -467,6 +484,9 @@ CREATE INDEX IF NOT EXISTS idx_profile_intolerances_user_id ON health.profile_in
 CREATE INDEX IF NOT EXISTS idx_profile_conditions_user_id ON health.profile_conditions(user_id);
 CREATE INDEX IF NOT EXISTS idx_profile_chronic_conditions_user_id ON health.profile_chronic_conditions(user_id);
 CREATE INDEX IF NOT EXISTS idx_nutrition_profiles_user_id ON health.nutrition_profiles(user_id);
+CREATE INDEX IF NOT EXISTS idx_profiles_profession_index ON health.profiles(profession_index);
+CREATE INDEX IF NOT EXISTS idx_profiles_city_index ON health.profiles(city_index);
+CREATE INDEX IF NOT EXISTS idx_constraints_medications_index ON health.constraints(medications_index);
 CREATE INDEX IF NOT EXISTS idx_profile_snapshots_profile_id ON health.profile_snapshots(profile_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recommendation_runs_profile_id ON recommendation.runs(profile_id);
 CREATE INDEX IF NOT EXISTS idx_recommendation_runs_query_signature ON recommendation.runs(query_signature);
@@ -663,56 +683,39 @@ ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO security.audit_policies (key, value, description) VALUES
     ('retention_days', '365', 'Minimum retention for security audit events before archival review.'),
+    ('auth_failure_retention_days', '30', 'Authentication failures are retained for abuse investigation and then deleted.'),
+    ('rate_limit_bucket_retention_hours', '24', 'Inactive token bucket state is short-lived and purged.'),
+    ('session_retention_days', '30', 'Revoked and expired sessions are retained for short-lived security investigation.'),
+    ('recommendation_trace_retention_days', '90', 'Recommendation traces are retained long enough for explainability and incident review.'),
+    ('cache_retention_hours', '24', 'External API caches must expire quickly and must not store secrets.'),
     ('hash_chain', 'sha256_previous_hash', 'Every event is chained to the previous event hash for tamper evidence.'),
-    ('pii_strategy', 'fingerprint_ip_user_agent', 'Network identifiers are fingerprinted before persistence.')
+    ('pii_strategy', 'fingerprint_ip_user_agent', 'Network identifiers are fingerprinted before persistence.'),
+    ('access_control', 'owner_abac_default_deny', 'All sensitive resources require authenticated owner context and explicit action/sensitivity policy.'),
+    ('csrf_strategy', 'signed_double_submit_session_bound', 'Unsafe browser requests require a signed CSRF token bound to the session when authenticated.'),
+    ('health_data_at_rest', 'aes_256_gcm_with_hmac_blind_indexes', 'Reversible health fields use AES-256-GCM and searchable sensitive fields use keyed blind indexes.'),
+    ('rate_limit_store', 'redis_or_postgres_token_bucket', 'Rate limiting uses an atomic token bucket backed by Redis when configured or PostgreSQL fallback.'),
+    ('vector_policy', 'deterministic_explainable_vectors', 'Recommendation vectors must remain deterministic, traceable, versioned and non-authoritative versus health rules.')
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, description = EXCLUDED.description, updated_at = now();
 
--- +goose Down
-DROP TABLE IF EXISTS security.rate_limit_buckets;
-DROP TABLE IF EXISTS security.auth_failures;
-DROP TABLE IF EXISTS security.audit_policies;
-DROP TABLE IF EXISTS security.audit_events;
-DROP TABLE IF EXISTS recommendation.recipe_embeddings;
-DROP TABLE IF EXISTS recommendation.profile_embeddings;
-DROP TABLE IF EXISTS recommendation.ingredient_resolution_cache;
-DROP TABLE IF EXISTS recommendation.search_response_cache;
-DROP TABLE IF EXISTS recommendation.external_recipe_cache;
-DROP TABLE IF EXISTS recommendation.candidates;
-DROP TABLE IF EXISTS recommendation.runs;
-DROP TABLE IF EXISTS health.profile_snapshots;
-DROP TABLE IF EXISTS health.nutrition_profiles;
-DROP TABLE IF EXISTS health.profile_chronic_conditions;
-DROP TABLE IF EXISTS health.profile_conditions;
-DROP TABLE IF EXISTS health.profile_intolerances;
-DROP TABLE IF EXISTS health.profile_cuisines;
-DROP TABLE IF EXISTS health.profile_meal_types;
-DROP TABLE IF EXISTS health.profile_meal_styles;
-DROP TABLE IF EXISTS health.profile_preference_ingredients;
-DROP TABLE IF EXISTS health.constraints;
-DROP TABLE IF EXISTS health.preferences;
-DROP TABLE IF EXISTS health.lifestyles;
-DROP TABLE IF EXISTS health.profiles;
-DROP TABLE IF EXISTS catalog.medical_rules;
-DROP TABLE IF EXISTS catalog.spoonacular_param_map;
-DROP TABLE IF EXISTS catalog.cuisines;
-DROP TABLE IF EXISTS catalog.diets;
-DROP TABLE IF EXISTS catalog.meal_types;
-DROP TABLE IF EXISTS catalog.meal_styles;
-DROP TABLE IF EXISTS catalog.condition_aliases;
-DROP TABLE IF EXISTS catalog.conditions;
-DROP TABLE IF EXISTS catalog.intolerance_aliases;
-DROP TABLE IF EXISTS catalog.intolerances;
-DROP TABLE IF EXISTS catalog.ingredient_aliases;
-DROP TABLE IF EXISTS catalog.ingredients;
-DROP TABLE IF EXISTS identity.webauthn_challenges;
-DROP TABLE IF EXISTS identity.webauthn_credentials;
-DROP TABLE IF EXISTS identity.totp_secrets;
-DROP TABLE IF EXISTS identity.sessions;
-DROP TABLE IF EXISTS identity.external_identities;
-DROP TABLE IF EXISTS identity.users;
+-- +goose StatementBegin
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
+        CREATE ROLE app LOGIN PASSWORD 'password123';
+    END IF;
+END
+$$;
+-- +goose StatementEnd
 
-DROP SCHEMA IF EXISTS security;
-DROP SCHEMA IF EXISTS recommendation;
-DROP SCHEMA IF EXISTS health;
-DROP SCHEMA IF EXISTS catalog;
-DROP SCHEMA IF EXISTS identity;
+GRANT USAGE ON SCHEMA identity, catalog, health, recommendation, security TO app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity, catalog, health, recommendation TO app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON security.auth_failures, security.rate_limit_buckets TO app;
+GRANT SELECT ON security.audit_policies TO app;
+GRANT SELECT, INSERT ON security.audit_events TO app;
+
+-- +goose Down
+DROP SCHEMA IF EXISTS recommendation CASCADE;
+DROP SCHEMA IF EXISTS health CASCADE;
+DROP SCHEMA IF EXISTS catalog CASCADE;
+DROP SCHEMA IF EXISTS identity CASCADE;
+DROP SCHEMA IF EXISTS security CASCADE;

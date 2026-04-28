@@ -1,6 +1,6 @@
 import { Checkbox } from "@/components/ui/Checkbox";
 import { IngredientAutocompleteInput } from "@/components/forms/IngredientAutocompleteInput";
-import { CUISINE_OPTIONS, MEAL_STYLE_OPTIONS, MEAL_TYPE_OPTIONS } from "@/lib/constants";
+import { CUISINE_OPTIONS, MEAL_TYPE_OPTIONS } from "@/lib/constants";
 import { Cuisine, MealType, UserProfile } from "@/lib/types";
 
 type Props = {
@@ -18,29 +18,11 @@ type Props = {
 };
 
 export function PreferencesStep({ data, setData, errors }: Props) {
-  const mealStyles = data.preferences.mealStyles ?? [];
   const likes = data.preferences.likes ?? [];
   const dislikes = data.preferences.dislikes ?? [];
   const mealTypes = data.preferences.mealTypes ?? [];
   const preferredCuisines = data.preferences.preferredCuisines ?? [];
   const excludedCuisines = data.preferences.excludedCuisines ?? [];
-
-  const toggleMealStyle = (value: string) => {
-    setData((prev) => {
-      const currentMealStyles = prev.preferences.mealStyles ?? [];
-      const exists = currentMealStyles.includes(value as typeof currentMealStyles[number]);
-
-      return {
-        ...prev,
-        preferences: {
-          ...prev.preferences,
-          mealStyles: exists
-            ? currentMealStyles.filter((item) => item !== value)
-            : [...currentMealStyles, value as typeof currentMealStyles[number]],
-        },
-      };
-    });
-  };
 
   const toggleMealType = (value: string) => {
     setData((prev) => {
@@ -95,6 +77,7 @@ export function PreferencesStep({ data, setData, errors }: Props) {
         }
         error={errors?.likes}
         maxItems={25}
+        helperText="Preferences souples: elles ameliorent le score, sans bloquer une recette sure."
       />
 
       <IngredientAutocompleteInput
@@ -112,27 +95,14 @@ export function PreferencesStep({ data, setData, errors }: Props) {
         }
         error={errors?.dislikes}
         maxItems={25}
+        helperText="Signal souple: ces aliments seront penalises, pas interdits."
       />
 
       <div className="nm-field">
-        <label className="nm-label">Style de repas prefere</label>
+        <label className="nm-label">Moments et types de repas</label>
+        <span className="nm-help">Choisis ce que tu veux recevoir. On evite les boissons par defaut pour garder de vrais repas.</span>
         <div className="nm-check-grid">
-          {MEAL_STYLE_OPTIONS.map((item) => (
-            <Checkbox
-              key={item.value}
-              label={item.label}
-              checked={mealStyles.includes(item.value)}
-              onChange={() => toggleMealStyle(item.value)}
-            />
-          ))}
-        </div>
-        {errors?.mealStyles && <span className="nm-error">{errors.mealStyles}</span>}
-      </div>
-
-      <div className="nm-field">
-        <label className="nm-label">Types de repas preferes</label>
-        <div className="nm-check-grid">
-          {MEAL_TYPE_OPTIONS.map((item) => (
+          {MEAL_TYPE_OPTIONS.filter((item) => item.value !== "beverage").map((item) => (
             <Checkbox
               key={item.value}
               label={item.label}
@@ -146,6 +116,7 @@ export function PreferencesStep({ data, setData, errors }: Props) {
 
       <div className="nm-field">
         <label className="nm-label">Cuisines preferees</label>
+        <span className="nm-help">Facultatif: c'est un bonus de scoring, pas une contrainte stricte.</span>
         <div className="nm-check-grid">
           {CUISINE_OPTIONS.map((item) => (
             <Checkbox
@@ -161,6 +132,7 @@ export function PreferencesStep({ data, setData, errors }: Props) {
 
       <div className="nm-field">
         <label className="nm-label">Cuisines a exclure</label>
+        <span className="nm-help">Contrainte forte: les cuisines cochees seront evitees.</span>
         <div className="nm-check-grid">
           {CUISINE_OPTIONS.map((item) => (
             <Checkbox

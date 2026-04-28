@@ -13,6 +13,7 @@ import {
   getProfile,
   MfaStatus,
   registerPasskey,
+  setMfaPreference,
   verifyPasskey,
 } from "@/lib/api";
 import { NutritionProfile, UserProfileResponse } from "@/lib/types";
@@ -33,6 +34,14 @@ export default function ProfilePage() {
     newPassword: "",
     confirmPassword: "",
   });
+
+  async function refreshMfaStatus() {
+    try {
+      setMfaStatus(await getMfaStatus());
+    } catch {
+      setMfaStatus(null);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -74,14 +83,6 @@ export default function ProfilePage() {
       cancelled = true;
     };
   }, []);
-
-  const refreshMfaStatus = async () => {
-    try {
-      setMfaStatus(await getMfaStatus());
-    } catch {
-      setMfaStatus(null);
-    }
-  };
 
   const handlePasswordChange = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -146,6 +147,18 @@ export default function ProfilePage() {
     }
   };
 
+  const handleSetMfaPreference = async (preferredMethod: "" | "totp" | "passkey") => {
+    setSecurityError(null);
+    setSecurityMessage(null);
+    try {
+      await setMfaPreference(preferredMethod);
+      await refreshMfaStatus();
+      setSecurityMessage(preferredMethod ? "Preferred MFA method updated." : "Preferred MFA method cleared.");
+    } catch (err) {
+      setSecurityError(getSafeErrorMessage(err, "profile.security.passkey.verify"));
+    }
+  };
+
   const handleVerifyPasskey = async () => {
     setSecurityError(null);
     setSecurityMessage(null);
@@ -204,7 +217,6 @@ export default function ProfilePage() {
           <div><strong>Max ready time:</strong> {profile.lifestyle.maxReadyTime} min</div>
           <div><strong>Likes:</strong> {profile.preferences.likes.join(", ") || "-"}</div>
           <div><strong>Dislikes:</strong> {profile.preferences.dislikes.join(", ") || "-"}</div>
-          <div><strong>Meal styles:</strong> {profile.preferences.mealStyles.join(", ") || "-"}</div>
           <div><strong>Meal types:</strong> {profile.preferences.mealTypes.join(", ") || "-"}</div>
           <div><strong>Preferred cuisines:</strong> {profile.preferences.preferredCuisines.join(", ") || "-"}</div>
           <div><strong>Excluded cuisines:</strong> {profile.preferences.excludedCuisines.join(", ") || "-"}</div>
@@ -218,7 +230,7 @@ export default function ProfilePage() {
           )}
           {nutrition && (
             <div className="nm-card">
-              <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>Health metrics</h2>
+              <h2 className="nm-title nm-section-title">Health metrics</h2>
               <div className="nm-stack">
                 <div><strong>BMI:</strong> {nutrition.bmi}</div>
                 <div><strong>BMI category:</strong> {nutrition.bmiCategory}</div>
@@ -230,7 +242,7 @@ export default function ProfilePage() {
             </div>
           )}
           <div className="nm-card">
-            <h2 className="nm-title" style={{ fontSize: "1.4rem" }}>Security</h2>
+            <h2 className="nm-title nm-section-title">Security</h2>
             <p className="nm-sub">
               Password changes revoke other sessions. MFA can use an authenticator app or a passkey.
             </p>
@@ -275,10 +287,11 @@ export default function ProfilePage() {
             <div className="nm-stack">
               <div><strong>Authenticator:</strong> {mfaStatus?.totpEnabled ? "enabled" : "disabled"}</div>
               <div><strong>Passkeys:</strong> {mfaStatus?.passkeyCount ?? 0}</div>
+              <div><strong>Preferred MFA:</strong> {mfaStatus?.effectiveMethod || "none"}</div>
               {totpSetup && (
                 <div className="nm-stack">
                   <div><strong>Secret:</strong> {totpSetup.secret}</div>
-                  <div style={{ wordBreak: "break-all" }}><strong>OTP URI:</strong> {totpSetup.otpauthUrl}</div>
+                  <div className="nm-break-all"><strong>OTP URI:</strong> {totpSetup.otpauthUrl}</div>
                 </div>
               )}
               <input
@@ -309,6 +322,23 @@ export default function ProfilePage() {
                 {mfaStatus?.passkeyEnabled && (
                   <button className="nm-link-btn nm-link-btn-primary" type="button" onClick={handleVerifyPasskey}>
                     Verify passkey
+                  </button>
+                )}
+              </div>
+              <div className="nm-inline-actions">
+                {mfaStatus?.totpEnabled && (
+                  <button className="nm-link-btn" type="button" onClick={() => void handleSetMfaPreference("totp")}>
+                    Prefer authenticator
+                  </button>
+                )}
+                {mfaStatus?.passkeyEnabled && (
+                  <button className="nm-link-btn" type="button" onClick={() => void handleSetMfaPreference("passkey")}>
+                    Prefer passkey
+                  </button>
+                )}
+                {mfaStatus?.stepUpAvailable && (
+                  <button className="nm-link-btn" type="button" onClick={() => void handleSetMfaPreference("")}>
+                    Auto-select MFA
                   </button>
                 )}
               </div>

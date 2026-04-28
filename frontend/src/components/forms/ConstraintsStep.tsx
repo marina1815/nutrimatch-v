@@ -1,7 +1,6 @@
 import { Checkbox } from "@/components/ui/Checkbox";
 import { IngredientAutocompleteInput } from "@/components/forms/IngredientAutocompleteInput";
 import {
-  CHRONIC_DISEASE_OPTIONS,
   COMMON_ALLERGIES,
   COMMON_CONDITIONS,
 } from "@/lib/constants";
@@ -20,6 +19,8 @@ type Props = {
 };
 
 export function ConstraintsStep({ data, setData, errors }: Props) {
+  const chronicConditionKeys = new Set<Condition>(["diabetes", "hypertension", "cardiac", "renal_failure"]);
+
   const toggleArrayValue = (
     section: "allergies" | "conditions",
     value: string,
@@ -42,18 +43,24 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
     });
   };
 
-  const toggleDisease = (value: string) => {
+  const toggleCondition = (value: string) => {
     setData((prev) => {
-      const disease = value as ChronicDisease;
-      const exists = prev.constraints.chronicDiseases.includes(disease);
+      const condition = value as Condition;
+      const exists = prev.constraints.conditions.includes(condition);
+      const nextConditions = exists
+        ? prev.constraints.conditions.filter((item) => item !== condition)
+        : [...prev.constraints.conditions, condition];
+      const nextChronicDiseases = nextConditions.filter((item): item is ChronicDisease =>
+        chronicConditionKeys.has(item),
+      );
 
       return {
         ...prev,
         constraints: {
           ...prev.constraints,
-          chronicDiseases: exists
-            ? prev.constraints.chronicDiseases.filter((item) => item !== disease)
-            : [...prev.constraints.chronicDiseases, disease],
+          conditions: nextConditions,
+          hasChronicDisease: nextChronicDiseases.length > 0,
+          chronicDiseases: nextChronicDiseases,
         },
       };
     });
@@ -77,14 +84,17 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
       </div>
 
       <div className="nm-field">
-        <label className="nm-label">Autres contraintes de sante</label>
+        <label className="nm-label">Contraintes de sante</label>
+        <span className="nm-help">
+          Un seul choix ici suffit: les maladies chroniques sont derivees automatiquement pour les regles medicales.
+        </span>
         <div className="nm-check-grid">
           {COMMON_CONDITIONS.map((item) => (
             <Checkbox
               key={item.value}
               label={item.label}
               checked={data.constraints.conditions.includes(item.value)}
-              onChange={() => toggleArrayValue("conditions", item.value)}
+              onChange={() => toggleCondition(item.value)}
             />
           ))}
         </div>
@@ -92,8 +102,8 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
       </div>
 
       <IngredientAutocompleteInput
-        label="Ingredients a exclure"
-        placeholder="Porc, crevettes, sucre..."
+        label="Ingredients a exclure strictement"
+        placeholder="Cherche: pork, shrimp, sugar..."
         values={data.constraints.excludedIngredients}
         onChange={(nextValues) =>
           setData((prev) => ({
@@ -106,61 +116,8 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
         }
         error={errors?.excludedIngredients}
         maxItems={30}
+        helperText="Contrainte forte envoyee au moteur: selectionne des ingredients reconnus pour eviter les fautes et synonymes ambigus."
       />
-
-      <div className="nm-field">
-        <label className="nm-label">As-tu une maladie chronique ?</label>
-        <div className="nm-inline-actions">
-          <button
-            type="button"
-            className={`nm-link-btn ${data.constraints.hasChronicDisease ? "nm-link-btn-primary" : ""}`}
-            onClick={() =>
-              setData((prev) => ({
-                ...prev,
-                constraints: { ...prev.constraints, hasChronicDisease: true },
-              }))
-            }
-          >
-            Oui
-          </button>
-
-          <button
-            type="button"
-            className={`nm-link-btn ${!data.constraints.hasChronicDisease ? "nm-link-btn-primary" : ""}`}
-            onClick={() =>
-              setData((prev) => ({
-                ...prev,
-                constraints: {
-                  ...prev.constraints,
-                  hasChronicDisease: false,
-                  chronicDiseases: [],
-                },
-              }))
-            }
-          >
-            Non
-          </button>
-        </div>
-      </div>
-
-      {data.constraints.hasChronicDisease && (
-        <div className="nm-field">
-          <label className="nm-label">Laquelle ?</label>
-          <div className="nm-check-grid">
-            {CHRONIC_DISEASE_OPTIONS.map((item) => (
-              <Checkbox
-                key={item.value}
-                label={item.label}
-                checked={data.constraints.chronicDiseases.includes(item.value as ChronicDisease)}
-                onChange={() => toggleDisease(item.value)}
-              />
-            ))}
-          </div>
-          {errors?.chronicDiseases && (
-            <span className="nm-error">{errors.chronicDiseases}</span>
-          )}
-        </div>
-      )}
 
       <div className="nm-field">
         <label className="nm-label">Prends-tu des medicaments ?</label>

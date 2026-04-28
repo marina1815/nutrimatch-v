@@ -33,6 +33,19 @@ func (r *VectorRepository) UpsertProfileEmbedding(ctx context.Context, embedding
 	}).Create(embedding).Error
 }
 
+func (r *VectorRepository) UpsertRecipeEmbedding(ctx context.Context, embedding *models.RecipeEmbedding) error {
+	embedding.UpdatedAt = time.Now()
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "external_recipe_id"}, {Name: "source"}, {Name: "embedding_version"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"source_hash": embedding.SourceHash,
+			"embedding":   gorm.Expr("?::vector", embedding.Embedding),
+			"metadata":    embedding.Metadata,
+			"updated_at":  embedding.UpdatedAt,
+		}),
+	}).Create(embedding).Error
+}
+
 func (r *VectorRepository) SearchSimilarProfileBundles(ctx context.Context, userID, profileID, embeddingVersion, vectorLiteral string, limit int) ([]repository.ProfileBundle, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 10
