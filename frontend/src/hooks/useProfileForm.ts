@@ -104,6 +104,7 @@ export function useProfileForm() {
   const [errors, setErrors] = useState<ProfileErrors>({});
   const [loadingSavedProfile, setLoadingSavedProfile] = useState(true);
   const [loadSavedProfileError, setLoadSavedProfileError] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
 
   useEffect(() => {
     setDraftProfile(data);
@@ -123,7 +124,12 @@ export function useProfileForm() {
         if (cancelled) {
           return;
         }
-        if (error instanceof ApiError && (error.status === 401 || error.status === 404)) {
+        if (error instanceof ApiError && error.status === 401) {
+          setAuthRequired(true);
+          clearDraftProfile();
+          return;
+        }
+        if (error instanceof ApiError && error.status === 404) {
           return;
         }
         setLoadSavedProfileError("Impossible de precharger le profil sauvegarde.");
@@ -172,6 +178,7 @@ export function useProfileForm() {
     errors,
     loadingSavedProfile,
     loadSavedProfileError,
+    authRequired,
     next,
     back,
     reset,

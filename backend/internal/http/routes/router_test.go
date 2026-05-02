@@ -1820,6 +1820,6 @@ func TestRouterGracefullyDegradesWhenAIIsUnavailable(t *testing.T) {
 	tracePayload := decodeJSONBody(t, traceResp)
 	decisionSummary := tracePayload["decisionSummary"].(map[string]any)
 	if decisionSummary["aiApplied"] != false {
-		t.Fatalf("expected aiApplied=false when AI rerank fails, got %#v", decisionSummary["aiApplied"])
+		t.Fatalf("expected aiApplied=false when AI advice fails, got %#v", decisionSummary["aiApplied"])
 	}
 }

@@ -3,9 +3,9 @@ import "client-only";
 import {
   CurrentSession,
   MealRecommendation,
+  NutritionProfile,
   RecommendationExplanation,
   RecommendationTrace,
-  NutritionProfile,
   UserProfile,
   UserProfileResponse,
 } from "@/lib/types";
@@ -48,11 +48,6 @@ export type MfaStatus = {
   stepUpAvailable: boolean;
   preferredMethod: "" | "totp" | "passkey";
   effectiveMethod: "" | "totp" | "passkey";
-};
-
-type TotpSetupResponse = {
-  secret: string;
-  otpauthUrl: string;
 };
 
 type PasskeyOptionsResponse = {
@@ -330,114 +325,6 @@ export async function changePassword(payload: {
   );
 }
 
-export async function getMfaStatus() {
-  return apiRequest<MfaStatus>(
-    "/api/v1/auth/mfa/status",
-    {
-      method: "GET",
-    },
-    { auth: true },
-  );
-}
-
-export async function setMfaPreference(preferredMethod: "" | "totp" | "passkey") {
-  return apiRequest<void>(
-    "/api/v1/auth/mfa/preference",
-    {
-      method: "POST",
-      body: JSON.stringify({ preferredMethod }),
-    },
-    { auth: true, csrf: true },
-  );
-}
-
-export async function beginTotpSetup() {
-  return apiRequest<TotpSetupResponse>(
-    "/api/v1/auth/mfa/totp/setup",
-    {
-      method: "POST",
-    },
-    { auth: true, csrf: true },
-  );
-}
-
-export async function confirmTotp(code: string) {
-  return apiRequest<void>(
-    "/api/v1/auth/mfa/totp/confirm",
-    {
-      method: "POST",
-      body: JSON.stringify({ code }),
-    },
-    { auth: true, csrf: true },
-  );
-}
-
-export async function disableTotp(code: string) {
-  return apiRequest<void>(
-    "/api/v1/auth/mfa/totp/disable",
-    {
-      method: "POST",
-      body: JSON.stringify({ code }),
-    },
-    { auth: true, csrf: true },
-  );
-}
-
-export async function registerPasskey(displayName = "NutriMatch passkey") {
-  if (!window.PublicKeyCredential) {
-    throw new ApiError("Passkeys are not supported by this browser", 400, "PASSKEY_UNSUPPORTED");
-  }
-
-  const begin = await apiRequest<PasskeyOptionsResponse>(
-    "/api/v1/auth/mfa/passkeys/registration/options",
-    { method: "POST" },
-    { auth: true, csrf: true },
-  );
-  const credential = await navigator.credentials.create(normalizeCredentialCreationOptions(begin.options));
-  if (!credential) {
-    throw new ApiError("Passkey registration was cancelled", 400, "PASSKEY_CANCELLED");
-  }
-
-  const params = new URLSearchParams({
-    challengeId: begin.challengeId,
-    displayName,
-  });
-  return apiRequest<void>(
-    `/api/v1/auth/mfa/passkeys/registration/finish?${params.toString()}`,
-    {
-      method: "POST",
-      body: JSON.stringify(publicKeyCredentialToJSON(credential as PublicKeyCredential)),
-    },
-    { auth: true, csrf: true },
-  );
-}
-
-export async function verifyPasskey() {
-  if (!window.PublicKeyCredential) {
-    throw new ApiError("Passkeys are not supported by this browser", 400, "PASSKEY_UNSUPPORTED");
-  }
-
-  const begin = await apiRequest<PasskeyOptionsResponse>(
-    "/api/v1/auth/mfa/passkeys/authentication/options",
-    { method: "POST" },
-    { auth: true, csrf: true },
-  );
-  const credential = await navigator.credentials.get(normalizeCredentialRequestOptions(begin.options));
-  if (!credential) {
-    throw new ApiError("Passkey verification was cancelled", 400, "PASSKEY_CANCELLED");
-  }
-
-  const params = new URLSearchParams({ challengeId: begin.challengeId });
-  return apiRequest<void>(
-    `/api/v1/auth/mfa/passkeys/authentication/finish?${params.toString()}`,
-    {
-      method: "POST",
-      body: JSON.stringify(publicKeyCredentialToJSON(credential as PublicKeyCredential)),
-    },
-    { auth: true, csrf: true },
-  );
-}
-
 export async function beginLoginPasskey(challengeId: string) {
   return apiRequest<PasskeyOptionsResponse>(
     "/api/v1/auth/mfa/login/passkeys/options",
@@ -562,45 +449,6 @@ export async function suggestIngredients(query: string, limit = 5) {
   return response.items;
 }
 
-function normalizeCredentialCreationOptions(raw: unknown): CredentialCreationOptions {
-  const options = unwrapPublicKeyOptions(raw) as PublicKeyCredentialCreationOptions;
-  return {
-    publicKey: {
-      ...options,
-      challenge: base64UrlToArrayBuffer(options.challenge as unknown as string),
-      user: {
-        ...options.user,
-        id: base64UrlToArrayBuffer(options.user.id as unknown as string),
-      },
-      excludeCredentials: options.excludeCredentials?.map((credential) => ({
-        ...credential,
-        id: base64UrlToArrayBuffer(credential.id as unknown as string),
-      })),
-    },
-  };
-}
-
-function normalizeCredentialRequestOptions(raw: unknown): CredentialRequestOptions {
-  const options = unwrapPublicKeyOptions(raw) as PublicKeyCredentialRequestOptions;
-  return {
-    publicKey: {
-      ...options,
-      challenge: base64UrlToArrayBuffer(options.challenge as unknown as string),
-      allowCredentials: options.allowCredentials?.map((credential) => ({
-        ...credential,
-        id: base64UrlToArrayBuffer(credential.id as unknown as string),
-      })),
-    },
-  };
-}
-
-function unwrapPublicKeyOptions(raw: unknown): unknown {
-  if (raw && typeof raw === "object" && "publicKey" in raw) {
-    return (raw as { publicKey: unknown }).publicKey;
-  }
-  return raw;
-}
-
 function publicKeyCredentialToJSON(credential: PublicKeyCredential) {
   const response = credential.response as AuthenticatorAttestationResponse | AuthenticatorAssertionResponse;
   const payload: Record<string, unknown> = {
@@ -624,17 +472,6 @@ function publicKeyCredentialToJSON(credential: PublicKeyCredential) {
     };
   }
   return payload;
-}
-
-function base64UrlToArrayBuffer(value: string): ArrayBuffer {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-  const binary = window.atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
 }
 
 function arrayBufferToBase64Url(buffer: ArrayBuffer): string {

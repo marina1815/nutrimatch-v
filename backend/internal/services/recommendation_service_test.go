@@ -516,23 +516,25 @@ func TestEvaluateCandidateRejectsMedicalProteinCeiling(t *testing.T) {
 	}
 }
 
-func TestApplyAIRerankValidatesIDsAndPreservesDeterministicExplanation(t *testing.T) {
+func TestApplyAIAdviceValidatesIDsAndPreservesDeterministicExplanation(t *testing.T) {
 	ai := &fakeAITextGenerator{
-		text: `[{"id":"meal-1","confidenceBonus":3.2,"explanation":"Closer to stated healthy preferences."},{"id":"ghost","confidenceBonus":5,"explanation":"Should be ignored"}]`,
+		text: `[{"id":"meal-1","verdict":"pass","explanation":"Closer to stated healthy preferences."},{"id":"ghost","verdict":"pass","explanation":"Should be ignored"}]`,
 	}
 	service := &RecommendationService{AI: ai}
 	candidates := []*models.RecommendationCandidate{
 		{
 			ExternalRecipeID: "meal-1",
 			Title:            "Chicken Bowl",
+			Accepted:         true,
 			FinalScore:       50,
 			Explanation:      "Selected because passes deterministic profile validation",
+			Ingredients:      models.StringSlice{"chicken", "quinoa"},
 			Tags:             models.StringSlice{"healthy", "balanced"},
 			SourceProvenance: models.JSONMap{},
 		},
 	}
 
-	service.applyAIRerank(context.Background(), &models.Lifestyle{
+	service.applyAIAdvice(context.Background(), &models.Lifestyle{
 		Goal:          "weight_loss",
 		ActivityLevel: "light",
 	}, &models.Preferences{
@@ -540,13 +542,13 @@ func TestApplyAIRerankValidatesIDsAndPreservesDeterministicExplanation(t *testin
 		MealStyles: models.StringSlice{"healthy"},
 	}, candidates)
 
-	if candidates[0].FinalScore != 53.2 {
-		t.Fatalf("expected validated AI bonus to be applied, got %v", candidates[0].FinalScore)
+	if candidates[0].FinalScore != 50 {
+		t.Fatalf("expected AI advice not to change deterministic score, got %v", candidates[0].FinalScore)
 	}
-	if !strings.Contains(candidates[0].Explanation, "Selected because") || !strings.Contains(candidates[0].Explanation, "AI rerank note:") {
+	if !strings.Contains(candidates[0].Explanation, "Selected because") || !strings.Contains(candidates[0].Explanation, "AI advice:") {
 		t.Fatalf("expected deterministic explanation to be preserved and augmented, got %q", candidates[0].Explanation)
 	}
-	if _, ok := candidates[0].SourceProvenance["aiRerank"]; !ok {
+	if _, ok := candidates[0].SourceProvenance["aiAdvice"]; !ok {
 		t.Fatalf("expected validated AI provenance metadata")
 	}
 	if strings.Contains(strings.ToLower(ai.prompt), "medication") || strings.Contains(strings.ToLower(ai.prompt), "condition") {
@@ -554,20 +556,21 @@ func TestApplyAIRerankValidatesIDsAndPreservesDeterministicExplanation(t *testin
 	}
 }
 
-func TestApplyAIRerankReturnsFalseWhenAIUnavailable(t *testing.T) {
+func TestApplyAIAdviceReturnsFalseWhenAIUnavailable(t *testing.T) {
 	ai := &fakeAITextGenerator{err: errors.New("upstream unavailable")}
 	service := &RecommendationService{AI: ai}
 	candidates := []*models.RecommendationCandidate{
 		{
 			ExternalRecipeID: "meal-1",
 			Title:            "Chicken Bowl",
+			Accepted:         true,
 			FinalScore:       50,
 			Explanation:      "Selected because passes deterministic profile validation",
 			SourceProvenance: models.JSONMap{},
 		},
 	}
 
-	applied := service.applyAIRerank(context.Background(), &models.Lifestyle{
+	applied := service.applyAIAdvice(context.Background(), &models.Lifestyle{
 		Goal:          "weight_loss",
 		ActivityLevel: "light",
 	}, &models.Preferences{
@@ -576,7 +579,7 @@ func TestApplyAIRerankReturnsFalseWhenAIUnavailable(t *testing.T) {
 	}, candidates)
 
 	if applied {
-		t.Fatalf("expected ai rerank to report false when AI is unavailable")
+		t.Fatalf("expected ai advice to report false when AI is unavailable")
 	}
 	if candidates[0].FinalScore != 50 {
 		t.Fatalf("expected deterministic score to remain unchanged, got %v", candidates[0].FinalScore)
@@ -720,31 +723,42 @@ func TestGetRecommendationsUsesFallbackWhenPrimaryCandidatesAreRejected(t *testi
 	}
 }
 
-func TestApplyAIRerankClampsBonusAndSanitizesExplanation(t *testing.T) {
+func TestApplyAIAdviceSanitizesExplanationWithoutChangingScore(t *testing.T) {
 	ai := &fakeAITextGenerator{
-		text: `[{"id":"meal-2","confidenceBonus":9,"explanation":"  Strong macro fit.\n\nKeeps protein high while staying balanced and quick for the user across the whole week without introducing any unsafe reasoning or extra meals that were not approved.  "}]`,
+		text: `[{"id":"meal-2","verdict":"pass","explanation":"  Strong macro fit.\n\nKeeps protein high while staying balanced and quick for the user across the whole week without introducing any unsafe reasoning or extra meals that were not approved.  "}]`,
 	}
 	service := &RecommendationService{AI: ai}
 	candidates := []*models.RecommendationCandidate{
 		{
 			ExternalRecipeID: "meal-2",
 			Title:            "Quinoa Salad",
+			Accepted:         true,
 			FinalScore:       40,
 			Explanation:      "Selected because passes deterministic profile validation",
 			SourceProvenance: models.JSONMap{},
 		},
 	}
 
-	service.applyAIRerank(context.Background(), &models.Lifestyle{
+	service.applyAIAdvice(context.Background(), &models.Lifestyle{
 		Goal:          "energy_maintenance",
 		ActivityLevel: "moderate",
 	}, &models.Preferences{}, candidates)
 
-	if candidates[0].FinalScore != 45 {
-		t.Fatalf("expected AI bonus to be clamped to 5, got %v", candidates[0].FinalScore)
+	if candidates[0].FinalScore != 40 {
+		t.Fatalf("expected AI advice not to change deterministic score, got %v", candidates[0].FinalScore)
 	}
 	if strings.Contains(candidates[0].Explanation, "\n") {
 		t.Fatalf("expected AI explanation to be sanitized onto one line")
+	}
+}
+
+func TestParseAIAdviceResponseAcceptsMarkdownFencedJSON(t *testing.T) {
+	items, err := parseAIAdviceResponse("```json\n[{\"id\":\"meal-1\",\"verdict\":\"pass\",\"explanation\":\"Good fit.\"}]\n```")
+	if err != nil {
+		t.Fatalf("expected fenced JSON to parse, got %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "meal-1" {
+		t.Fatalf("expected parsed advice item, got %+v", items)
 	}
 }
 
@@ -920,6 +934,15 @@ func TestComputeDeterministicScoreRunsOnlyAfterHardFilterPass(t *testing.T) {
 	}
 	if len(passed.acceptedReasons) == 0 {
 		t.Fatalf("expected accepted reasons after deterministic scoring")
+	}
+}
+
+func TestStripHTMLRemovesSpoonacularLinks(t *testing.T) {
+	input := `<a href="https://spoonacular.com/recipes/slow-cooker-lamb-curry-1583131">Slow cooker lamb curry</a>, <b>rich</b> &amp; balanced.`
+	got := stripHTML(input)
+	want := "Slow cooker lamb curry, rich & balanced."
+	if got != want {
+		t.Fatalf("expected cleaned summary %q, got %q", want, got)
 	}
 }
 

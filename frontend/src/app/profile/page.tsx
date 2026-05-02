@@ -4,17 +4,9 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import {
   ApiError,
-  beginTotpSetup,
   changePassword,
-  confirmTotp,
-  disableTotp,
-  getMfaStatus,
   getNutritionProfile,
   getProfile,
-  MfaStatus,
-  registerPasskey,
-  setMfaPreference,
-  verifyPasskey,
 } from "@/lib/api";
 import { NutritionProfile, UserProfileResponse } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
@@ -24,9 +16,7 @@ export default function ProfilePage() {
   const [nutrition, setNutrition] = useState<NutritionProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mfaStatus, setMfaStatus] = useState<MfaStatus | null>(null);
-  const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
-  const [totpCode, setTotpCode] = useState("");
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [securityMessage, setSecurityMessage] = useState<string | null>(null);
   const [securityError, setSecurityError] = useState<string | null>(null);
   const [passwords, setPasswords] = useState({
@@ -34,14 +24,6 @@ export default function ProfilePage() {
     newPassword: "",
     confirmPassword: "",
   });
-
-  async function refreshMfaStatus() {
-    try {
-      setMfaStatus(await getMfaStatus());
-    } catch {
-      setMfaStatus(null);
-    }
-  }
 
   useEffect(() => {
     let cancelled = false;
@@ -56,7 +38,6 @@ export default function ProfilePage() {
         if (!cancelled) {
           setProfile(profileResponse);
           setNutrition(nutritionResponse);
-          void refreshMfaStatus();
         }
       } catch (err) {
         if (cancelled) {
@@ -64,10 +45,13 @@ export default function ProfilePage() {
         }
 
         if (err instanceof ApiError && err.status === 401) {
+          setErrorStatus(401);
           setError("Connecte-toi pour consulter ton profil.");
         } else if (err instanceof ApiError && err.status === 404) {
+          setErrorStatus(404);
           setError("Aucun profil enregistre pour le moment.");
         } else {
+          setErrorStatus(null);
           setError(getSafeErrorMessage(err, "profile.load"));
         }
       } finally {
@@ -97,79 +81,6 @@ export default function ProfilePage() {
     }
   };
 
-  const handleBeginTotp = async () => {
-    setSecurityError(null);
-    setSecurityMessage(null);
-    try {
-      setTotpSetup(await beginTotpSetup());
-      setSecurityMessage("Scan the authenticator URI or add the secret manually, then confirm the 6-digit code.");
-    } catch (err) {
-      setSecurityError(getSafeErrorMessage(err, "profile.security.totp.setup"));
-    }
-  };
-
-  const handleConfirmTotp = async () => {
-    setSecurityError(null);
-    setSecurityMessage(null);
-    try {
-      await confirmTotp(totpCode);
-      setTotpCode("");
-      setTotpSetup(null);
-      await refreshMfaStatus();
-      setSecurityMessage("Authenticator MFA is enabled.");
-    } catch (err) {
-      setSecurityError(getSafeErrorMessage(err, "profile.security.totp.confirm"));
-    }
-  };
-
-  const handleDisableTotp = async () => {
-    setSecurityError(null);
-    setSecurityMessage(null);
-    try {
-      await disableTotp(totpCode);
-      setTotpCode("");
-      await refreshMfaStatus();
-      setSecurityMessage("Authenticator MFA is disabled.");
-    } catch (err) {
-      setSecurityError(getSafeErrorMessage(err, "profile.security.totp.disable"));
-    }
-  };
-
-  const handleRegisterPasskey = async () => {
-    setSecurityError(null);
-    setSecurityMessage(null);
-    try {
-      await registerPasskey("NutriMatch passkey");
-      await refreshMfaStatus();
-      setSecurityMessage("Passkey registered.");
-    } catch (err) {
-      setSecurityError(getSafeErrorMessage(err, "profile.security.passkey.register"));
-    }
-  };
-
-  const handleSetMfaPreference = async (preferredMethod: "" | "totp" | "passkey") => {
-    setSecurityError(null);
-    setSecurityMessage(null);
-    try {
-      await setMfaPreference(preferredMethod);
-      await refreshMfaStatus();
-      setSecurityMessage(preferredMethod ? "Preferred MFA method updated." : "Preferred MFA method cleared.");
-    } catch (err) {
-      setSecurityError(getSafeErrorMessage(err, "profile.security.passkey.verify"));
-    }
-  };
-
-  const handleVerifyPasskey = async () => {
-    setSecurityError(null);
-    setSecurityMessage(null);
-    try {
-      await verifyPasskey();
-      setSecurityMessage("Passkey verification succeeded.");
-    } catch (err) {
-      setSecurityError(getSafeErrorMessage(err, "profile.security.passkey.verify"));
-    }
-  };
-
   if (loading) {
     return (
       <main className="nm-page">
@@ -188,9 +99,11 @@ export default function ProfilePage() {
           <h1 className="nm-title">No profile found</h1>
           <p className="nm-sub">{error || "Please complete onboarding first."}</p>
           <div className="nm-inline-actions">
-            <Link href="/onboarding" className="nm-link-btn nm-link-btn-primary">
-              Start onboarding
-            </Link>
+            {errorStatus !== 401 && (
+              <Link href="/onboarding" className="nm-link-btn nm-link-btn-primary">
+                Start onboarding
+              </Link>
+            )}
             <Link href="/login" className="nm-link-btn">
               Sign in
             </Link>
@@ -244,7 +157,7 @@ export default function ProfilePage() {
           <div className="nm-card">
             <h2 className="nm-title nm-section-title">Security</h2>
             <p className="nm-sub">
-              Password changes revoke other sessions. MFA can use an authenticator app or a passkey.
+              Password changes revoke other sessions.
             </p>
             {securityMessage && <p className="nm-sub">{securityMessage}</p>}
             {securityError && <p className="nm-error">{securityError}</p>}
@@ -283,66 +196,6 @@ export default function ProfilePage() {
                 Update password
               </button>
             </form>
-
-            <div className="nm-stack">
-              <div><strong>Authenticator:</strong> {mfaStatus?.totpEnabled ? "enabled" : "disabled"}</div>
-              <div><strong>Passkeys:</strong> {mfaStatus?.passkeyCount ?? 0}</div>
-              <div><strong>Preferred MFA:</strong> {mfaStatus?.effectiveMethod || "none"}</div>
-              {totpSetup && (
-                <div className="nm-stack">
-                  <div><strong>Secret:</strong> {totpSetup.secret}</div>
-                  <div className="nm-break-all"><strong>OTP URI:</strong> {totpSetup.otpauthUrl}</div>
-                </div>
-              )}
-              <input
-                className="nm-input"
-                inputMode="numeric"
-                pattern="[0-9]{6}"
-                placeholder="6-digit authenticator code"
-                value={totpCode}
-                onChange={(event) => setTotpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-              />
-              <div className="nm-inline-actions">
-                <button className="nm-link-btn" type="button" onClick={handleBeginTotp}>
-                  Setup authenticator
-                </button>
-                <button className="nm-link-btn nm-link-btn-primary" type="button" onClick={handleConfirmTotp}>
-                  Confirm authenticator
-                </button>
-                {mfaStatus?.totpEnabled && (
-                  <button className="nm-link-btn" type="button" onClick={handleDisableTotp}>
-                    Disable authenticator
-                  </button>
-                )}
-              </div>
-              <div className="nm-inline-actions">
-                <button className="nm-link-btn" type="button" onClick={handleRegisterPasskey}>
-                  Add passkey
-                </button>
-                {mfaStatus?.passkeyEnabled && (
-                  <button className="nm-link-btn nm-link-btn-primary" type="button" onClick={handleVerifyPasskey}>
-                    Verify passkey
-                  </button>
-                )}
-              </div>
-              <div className="nm-inline-actions">
-                {mfaStatus?.totpEnabled && (
-                  <button className="nm-link-btn" type="button" onClick={() => void handleSetMfaPreference("totp")}>
-                    Prefer authenticator
-                  </button>
-                )}
-                {mfaStatus?.passkeyEnabled && (
-                  <button className="nm-link-btn" type="button" onClick={() => void handleSetMfaPreference("passkey")}>
-                    Prefer passkey
-                  </button>
-                )}
-                {mfaStatus?.stepUpAvailable && (
-                  <button className="nm-link-btn" type="button" onClick={() => void handleSetMfaPreference("")}>
-                    Auto-select MFA
-                  </button>
-                )}
-              </div>
-            </div>
           </div>
         </div>
 

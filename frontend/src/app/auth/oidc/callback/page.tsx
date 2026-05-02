@@ -5,8 +5,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { getCurrentSession } from "@/lib/api";
 import { clearClientSession, setCurrentProfileId } from "@/lib/session";
 
+const SAFE_NEXT_PATHS = new Set(["/results", "/profile", "/onboarding"]);
+
 function normalizeNextPath(input: string | null) {
-  if (!input || !input.startsWith("/") || input.startsWith("//")) {
+  if (!input || !input.startsWith("/") || input.startsWith("//") || !SAFE_NEXT_PATHS.has(input)) {
     return "/results";
   }
   return input;
@@ -53,7 +55,7 @@ function OIDCCallbackContent() {
 
   return (
     <main className="nm-page">
-      <section className="nm-results-shell">
+      <section className="nm-card">
         <h1 className="nm-title">Connexion securisee en cours</h1>
         <p className="nm-sub">
           {error || "Nous finalisons votre session et rechargeons votre espace NutriMatch."}
@@ -68,7 +70,7 @@ export default function OIDCCallbackPage() {
     <Suspense
       fallback={
         <main className="nm-page">
-          <section className="nm-results-shell">
+          <section className="nm-card">
             <h1 className="nm-title">Connexion securisee en cours</h1>
             <p className="nm-sub">
               Nous finalisons votre session et rechargeons votre espace NutriMatch.

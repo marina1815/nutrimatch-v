@@ -1,3 +1,4 @@
+import { sanitizeDisplayText } from "@/lib/text-sanitization";
 import { MealRecommendation, RecommendationExplanation } from "@/lib/types";
 
 type Props = {
@@ -8,6 +9,11 @@ type Props = {
 };
 
 export function MealCard({ meal, explanation, loadingExplanation, onExplain }: Props) {
+  const description = sanitizeDisplayText(meal.description);
+  const matchReason = sanitizeDisplayText(meal.matchReason);
+  const explanationText = explanation ? sanitizeDisplayText(explanation.explanation) : "";
+  const ingredients = meal.ingredients.map(sanitizeDisplayText).filter(Boolean);
+
   return (
     <div className="nm-card">
       <div className="nm-meal-top">
@@ -15,7 +21,7 @@ export function MealCard({ meal, explanation, loadingExplanation, onExplain }: P
         <span className="nm-badge">{meal.calories} kcal</span>
       </div>
 
-      <p className="nm-muted">{meal.description}</p>
+      <p className="nm-muted">{description}</p>
 
       <div className="nm-macros">
         <span>Protein: {meal.protein}g</span>
@@ -29,7 +35,18 @@ export function MealCard({ meal, explanation, loadingExplanation, onExplain }: P
         ))}
       </div>
 
-      <p className="nm-reason">{meal.matchReason}</p>
+      {ingredients.length > 0 && (
+        <div className="nm-ingredients">
+          <strong>Ingredients</strong>
+          <div className="nm-ingredient-list">
+            {ingredients.map((ingredient) => (
+              <span key={ingredient} className="nm-ingredient">{ingredient}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <p className="nm-reason">{matchReason}</p>
 
       {onExplain && (
         <div className="nm-inline-actions">
@@ -46,7 +63,7 @@ export function MealCard({ meal, explanation, loadingExplanation, onExplain }: P
 
       {explanation && (
         <div className="nm-explain-box">
-          <p className="nm-reason">{explanation.explanation}</p>
+          <p className="nm-reason">{explanationText}</p>
           <p className="nm-muted">
             Accepted: {explanation.acceptedReasons.join(", ") || "-"}
           </p>

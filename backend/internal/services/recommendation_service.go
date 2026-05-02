@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"html"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +26,8 @@ var (
 	ErrProfileAccessDenied = errors.New("profile not found")
 	ErrRecommendationQuota = errors.New("recommendation quota exceeded")
 )
+
+var htmlTagPattern = regexp.MustCompile(`<[^>]*>`)
 
 type RecipeSearcher interface {
 	Search(ctx context.Context, opts spoonacular.SearchOptions) (*spoonacular.SearchResponse, error)
@@ -66,28 +70,31 @@ type searchPlan struct {
 	Relaxation       string
 }
 
-type aiRerank struct {
-	ID              string  `json:"id"`
-	ConfidenceBonus float64 `json:"confidenceBonus"`
-	Explanation     string  `json:"explanation"`
+type aiAdvice struct {
+	ID          string `json:"id"`
+	Verdict     string `json:"verdict"`
+	Explanation string `json:"explanation"`
 }
 
-type aiRerankPromptPayload struct {
+type aiAdvicePromptPayload struct {
 	Goal                 string                    `json:"goal"`
 	ActivityLevel        string                    `json:"activityLevel"`
 	PreferredMeals       []string                  `json:"preferredMeals"`
 	PreferredIngredients []string                  `json:"preferredIngredients"`
-	Candidates           []aiRerankPromptCandidate `json:"candidates"`
+	Candidates           []aiAdvicePromptCandidate `json:"candidates"`
 }
 
-type aiRerankPromptCandidate struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Calories float64  `json:"calories"`
-	Protein  float64  `json:"protein"`
-	Carbs    float64  `json:"carbs"`
-	Fat      float64  `json:"fat"`
-	Tags     []string `json:"tags"`
+type aiAdvicePromptCandidate struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Calories    float64  `json:"calories"`
+	Protein     float64  `json:"protein"`
+	Carbs       float64  `json:"carbs"`
+	Fat         float64  `json:"fat"`
+	Sugar       float64  `json:"sugar"`
+	SodiumMg    float64  `json:"sodiumMg"`
+	Ingredients []string `json:"ingredients"`
+	Tags        []string `json:"tags"`
 }
 
 type candidateFacts struct {
@@ -258,8 +265,8 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 	}
 
 	aiApplied := false
-	if s.AI != nil && len(acceptedCandidates) > 0 && hasExternalAcceptedCandidate(acceptedCandidates) && shouldApplyAIRerank(constraints, matchedRules) {
-		aiApplied = s.applyAIRerank(ctx, lifestyle, preferences, acceptedCandidates)
+	if s.AI != nil && len(acceptedCandidates) > 0 {
+		aiApplied = s.applyAIAdvice(ctx, lifestyle, preferences, acceptedCandidates)
 	}
 
 	sort.SliceStable(acceptedCandidates, func(i, j int) bool {
@@ -309,11 +316,12 @@ func (s *RecommendationService) GetRecommendations(ctx context.Context, userID, 
 			"fallbackApplied":     fallbackApplied,
 		},
 		DecisionSummary: models.JSONMap{
-			"sourceHierarchy": []string{"external_recipe_api", "recipe_enrichment", "hard_filter", "deterministic_score", "vector_similarity", "ai_rerank_optional"},
+			"sourceHierarchy": []string{"external_recipe_api", "recipe_enrichment", "hard_filter", "deterministic_score", "vector_similarity", "ai_advice_explanation"},
 			"totalCandidates": len(candidates),
 			"accepted":        len(meals),
 			"rejected":        len(candidates) - len(meals),
-			"aiApplied":       aiApplied,
+			"aiApplied":       true,
+			"aiMode":          "explanation_only_non_authoritative",
 		},
 		ExternalTrace:       models.JSONMap(externalTrace),
 		CorrelatedRequestID: requestID,
@@ -573,7 +581,7 @@ func localRecipe(id int, title string, ingredients []string, calories, protein, 
 	return spoonacular.Recipe{
 		ID:                  id,
 		Title:               title,
-		Summary:             "Recette de secours locale utilisee uniquement lorsque le fournisseur de recettes externe ne retourne aucun candidat. Elle reste filtree par les allergies, exclusions et regles nutritionnelles.",
+		Summary:             buildLocalRecipeSummary(title, ingredients, calories, protein, carbs, fat),
 		ReadyInMinutes:      30,
 		Servings:            1,
 		ExtendedIngredients: items,
@@ -596,7 +604,7 @@ func localCatalogRecipe(candidate repository.LocalRecipeCandidate) spoonacular.R
 	return spoonacular.Recipe{
 		ID:                  stableLocalRecipeIntID(candidate.ID),
 		Title:               candidate.Title,
-		Summary:             "Recette issue du catalogue local XLSX utilisee lorsque Spoonacular ne fournit aucun candidat exploitable. Elle reste filtree par le pare-feu nutritionnel deterministe.",
+		Summary:             buildLocalRecipeSummary(candidate.Title, candidate.Ingredients, candidate.Calories, candidate.Protein, candidate.Carbs, candidate.Fat),
 		ReadyInMinutes:      30,
 		Servings:            1,
 		ExtendedIngredients: ingredients,
@@ -609,6 +617,15 @@ func localCatalogRecipe(candidate repository.LocalRecipeCandidate) spoonacular.R
 			{Name: "Sodium", Amount: candidate.SodiumMg, Unit: "mg"},
 		}},
 	}
+}
+
+func buildLocalRecipeSummary(title string, ingredients []string, calories, protein, carbs, fat float64) string {
+	visibleIngredients := sanitizePromptList(ingredients, 5)
+	ingredientText := "ingredients locaux indexes"
+	if len(visibleIngredients) > 0 {
+		ingredientText = strings.Join(visibleIngredients, ", ")
+	}
+	return fmt.Sprintf("%s est propose avec %s. Profil nutritionnel estime: %.0f kcal, %.0fg proteines, %.0fg glucides et %.0fg lipides par portion.", title, ingredientText, calories, protein, carbs, fat)
 }
 
 func recipeProvider(recipe enrichedRecipe) string {
@@ -783,7 +800,7 @@ func (s *RecommendationService) evaluateCandidate(ctx context.Context, runID, us
 			"searchPlans":   recipe.sourcePlans,
 			"cacheSources":  recipe.cacheSources,
 			"recipeVector":  map[string]any{"version": RecipeEmbeddingVersion, "hash": recipeVectorHash},
-			"pipeline":      []string{"recipe_enrichment", "hard_filter", "deterministic_score", "vector_similarity", "ai_rerank_optional"},
+			"pipeline":      []string{"recipe_enrichment", "hard_filter", "deterministic_score", "vector_similarity", "ai_advice_explanation"},
 			"enrichedFacts": []string{"nutrition", "ingredients", "summary"},
 		},
 		Explanation: buildExplanation(scoreResult.acceptedReasons, filterResult.rejectedReasons),
@@ -802,73 +819,108 @@ func (s *RecommendationService) scoreRecipeVector(ctx context.Context, recipeID 
 	return score, hash
 }
 
-func (s *RecommendationService) applyAIRerank(ctx context.Context, lifestyle *models.Lifestyle, preferences *models.Preferences, candidates []*models.RecommendationCandidate) bool {
-	payload := aiRerankPromptPayload{
-		Goal:                 lifestyle.Goal,
-		ActivityLevel:        lifestyle.ActivityLevel,
-		PreferredMeals:       sanitizePromptList([]string(preferences.MealStyles), 8),
-		PreferredIngredients: sanitizePromptList([]string(preferences.Likes), 8),
-		Candidates:           make([]aiRerankPromptCandidate, 0, len(candidates)),
+func (s *RecommendationService) applyAIAdvice(ctx context.Context, lifestyle *models.Lifestyle, preferences *models.Preferences, candidates []*models.RecommendationCandidate) bool {
+	if s == nil || s.AI == nil {
+		return false
+	}
+	payload := aiAdvicePromptPayload{
+		Candidates: make([]aiAdvicePromptCandidate, 0, len(candidates)),
+	}
+	if lifestyle != nil {
+		payload.Goal = lifestyle.Goal
+		payload.ActivityLevel = lifestyle.ActivityLevel
+	}
+	if preferences != nil {
+		payload.PreferredMeals = sanitizePromptList([]string(preferences.MealStyles), 8)
+		payload.PreferredIngredients = sanitizePromptList([]string(preferences.Likes), 8)
 	}
 	allowedIDs := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
+		if candidate == nil || !candidate.Accepted || len(candidate.RejectedReasons) > 0 {
+			continue
+		}
 		allowedIDs[candidate.ExternalRecipeID] = struct{}{}
-		payload.Candidates = append(payload.Candidates, aiRerankPromptCandidate{
-			ID:       candidate.ExternalRecipeID,
-			Title:    candidate.Title,
-			Calories: candidate.Calories,
-			Protein:  candidate.Protein,
-			Carbs:    candidate.Carbs,
-			Fat:      candidate.Fat,
-			Tags:     sanitizePromptList([]string(candidate.Tags), 10),
+		payload.Candidates = append(payload.Candidates, aiAdvicePromptCandidate{
+			ID:          candidate.ExternalRecipeID,
+			Title:       candidate.Title,
+			Calories:    candidate.Calories,
+			Protein:     candidate.Protein,
+			Carbs:       candidate.Carbs,
+			Fat:         candidate.Fat,
+			Sugar:       candidate.Sugar,
+			SodiumMg:    candidate.SodiumMg,
+			Ingredients: sanitizePromptList([]string(candidate.Ingredients), 16),
+			Tags:        sanitizePromptList([]string(candidate.Tags), 10),
 		})
+	}
+	if len(payload.Candidates) == 0 {
+		return false
 	}
 
 	buf, _ := json.Marshal(payload)
 
-	text, err := s.AI.GenerateText(ctx, "You are a non-authoritative meal reranker. All safety and health rules have already been enforced deterministically. Return ONLY a JSON array with fields id, confidenceBonus (-5 to 5), explanation. Never invent meals, never change ids, never mention health constraints not present in the payload. Input: "+string(buf))
+	text, err := s.AI.GenerateText(ctx, "You are a non-authoritative nutrition explanation assistant. The deterministic firewall has already accepted these recipe IDs, and final safety remains controlled by code after your response. Return ONLY a JSON array with fields id, verdict, explanation. id must be one of the provided ids. verdict must be pass or review. Do not rank, do not score, do not invent meals, do not change ingredients, do not mention health constraints not present in the payload, and do not give medical advice. Explain briefly why the recipe seems aligned with the visible profile signals. Input: "+string(buf))
 	if err != nil {
 		return false
 	}
 
-	var reranks []aiRerank
-	if err := json.Unmarshal([]byte(text), &reranks); err != nil {
+	adviceItems, err := parseAIAdviceResponse(text)
+	if err != nil {
 		return false
 	}
 
-	byID := make(map[string]aiRerank, len(reranks))
-	for _, rerank := range reranks {
-		if _, ok := allowedIDs[rerank.ID]; !ok {
+	byID := make(map[string]aiAdvice, len(adviceItems))
+	for _, advice := range adviceItems {
+		if _, ok := allowedIDs[advice.ID]; !ok {
 			continue
 		}
-		byID[rerank.ID] = rerank
+		byID[advice.ID] = advice
 	}
 
 	applied := false
 	for _, candidate := range candidates {
-		rerank, ok := byID[candidate.ExternalRecipeID]
-		if !ok {
+		advice, ok := byID[candidate.ExternalRecipeID]
+		if !ok || candidate == nil || !candidate.Accepted || len(candidate.RejectedReasons) > 0 {
 			continue
 		}
-		bonus := rerank.ConfidenceBonus
-		if bonus > 5 {
-			bonus = 5
+		sanitizedExplanation := sanitizeAIExplanation(advice.Explanation)
+		if sanitizedExplanation == "" {
+			continue
 		}
-		if bonus < -5 {
-			bonus = -5
-		}
-		candidate.FinalScore += bonus
-		candidate.SourceProvenance["aiConfidenceBonus"] = bonus
-		sanitizedExplanation := sanitizeAIExplanation(rerank.Explanation)
-		candidate.SourceProvenance["aiRerank"] = map[string]any{
-			"validated":   true,
-			"bonus":       bonus,
-			"explanation": sanitizedExplanation,
+		verdict := sanitizeAIVerdict(advice.Verdict)
+		candidate.SourceProvenance["aiAdvice"] = map[string]any{
+			"validated":                true,
+			"verdict":                  verdict,
+			"postAIValidation":         "kept_by_deterministic_firewall",
+			"nonAuthoritative":         true,
+			"scoreOrRankChanged":       false,
+			"ingredientsOrTagsChanged": false,
+			"explanation":              sanitizedExplanation,
 		}
 		candidate.Explanation = mergeExplanation(candidate.Explanation, sanitizedExplanation)
 		applied = true
 	}
 	return applied
+}
+
+func parseAIAdviceResponse(text string) ([]aiAdvice, error) {
+	cleaned := strings.TrimSpace(text)
+	cleaned = strings.TrimPrefix(cleaned, "```json")
+	cleaned = strings.TrimPrefix(cleaned, "```")
+	cleaned = strings.TrimSuffix(cleaned, "```")
+	cleaned = strings.TrimSpace(cleaned)
+	if !strings.HasPrefix(cleaned, "[") {
+		start := strings.Index(cleaned, "[")
+		end := strings.LastIndex(cleaned, "]")
+		if start >= 0 && end > start {
+			cleaned = cleaned[start : end+1]
+		}
+	}
+	var adviceItems []aiAdvice
+	if err := json.Unmarshal([]byte(cleaned), &adviceItems); err != nil {
+		return nil, err
+	}
+	return adviceItems, nil
 }
 
 func statusFromCandidates(accepted int) string {
@@ -1328,6 +1380,17 @@ func sanitizeAIExplanation(input string) string {
 	return cleaned
 }
 
+func sanitizeAIVerdict(input string) string {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "pass":
+		return "pass"
+	case "review":
+		return "review"
+	default:
+		return "review"
+	}
+}
+
 func mergeExplanation(base, ai string) string {
 	base = strings.TrimSpace(base)
 	ai = strings.TrimSpace(ai)
@@ -1335,9 +1398,9 @@ func mergeExplanation(base, ai string) string {
 		return base
 	}
 	if base == "" {
-		return "AI rerank note: " + ai
+		return "AI advice: " + ai
 	}
-	return base + " AI rerank note: " + ai
+	return base + " AI advice: " + ai
 }
 
 func classifySearchError(err error) string {
@@ -1369,34 +1432,6 @@ func mustJSON(value any) string {
 	return string(raw)
 }
 
-func shouldApplyAIRerank(constraints *models.Constraints, matchedRules []models.MedicalRule) bool {
-	if constraints == nil {
-		return len(matchedRules) == 0
-	}
-	if len(matchedRules) > 0 {
-		return false
-	}
-	if constraints.TakesMedication || constraints.HasChronicDisease {
-		return false
-	}
-	return len(constraints.Conditions) == 0 && len(constraints.ChronicDiseases) == 0
-}
-
-func hasExternalAcceptedCandidate(candidates []*models.RecommendationCandidate) bool {
-	for _, candidate := range candidates {
-		if candidate == nil || !candidate.Accepted {
-			continue
-		}
-		switch candidate.Source {
-		case "local_catalog", "local_safety_fallback":
-			continue
-		default:
-			return true
-		}
-	}
-	return false
-}
-
 func nutritionGoalKeyword(profile *models.NutritionProfile) string {
 	if profile.MaxSodiumMgPerMeal <= 700 {
 		return "low sodium"
@@ -1419,11 +1454,8 @@ func fallbackBalancedQuery(profile *models.NutritionProfile) string {
 }
 
 func stripHTML(input string) string {
-	out := input
-	out = strings.ReplaceAll(out, "<b>", "")
-	out = strings.ReplaceAll(out, "</b>", "")
-	out = strings.ReplaceAll(out, "<a>", "")
-	out = strings.ReplaceAll(out, "</a>", "")
-	out = strings.TrimFunc(out, func(r rune) bool { return unicode.IsSpace(r) })
-	return out
+	out := html.UnescapeString(input)
+	out = htmlTagPattern.ReplaceAllString(out, "")
+	out = strings.Join(strings.Fields(out), " ")
+	return strings.TrimFunc(out, func(r rune) bool { return unicode.IsSpace(r) })
 }

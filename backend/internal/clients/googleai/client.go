@@ -21,7 +21,19 @@ type Client struct {
 }
 
 type GenerateRequest struct {
-	Contents []Content `json:"contents"`
+	Contents         []Content        `json:"contents"`
+	GenerationConfig GenerationConfig `json:"generationConfig"`
+}
+
+type GenerationConfig struct {
+	ResponseMIMEType string         `json:"responseMimeType,omitempty"`
+	MaxOutputTokens  int            `json:"maxOutputTokens,omitempty"`
+	Temperature      float64        `json:"temperature,omitempty"`
+	ThinkingConfig   ThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+type ThinkingConfig struct {
+	ThinkingBudget int `json:"thinkingBudget"`
 }
 
 type Content struct {
@@ -42,13 +54,19 @@ type Candidate struct {
 
 func (c *Client) GenerateText(ctx context.Context, prompt string) (string, error) {
 	if c.HTTP == nil {
-		c.HTTP = &http.Client{Timeout: 15 * time.Second}
+		c.HTTP = &http.Client{Timeout: 35 * time.Second}
 	}
 	base := strings.TrimRight(c.BaseURL, "/")
 	endpoint := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", base, c.Model, c.APIKey)
 
 	payload := GenerateRequest{
 		Contents: []Content{{Parts: []Part{{Text: prompt}}}},
+		GenerationConfig: GenerationConfig{
+			ResponseMIMEType: "application/json",
+			MaxOutputTokens:  1024,
+			Temperature:      0.2,
+			ThinkingConfig:   ThinkingConfig{ThinkingBudget: 0},
+		},
 	}
 	buf, err := json.Marshal(payload)
 	if err != nil {

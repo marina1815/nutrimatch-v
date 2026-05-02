@@ -25,6 +25,7 @@ export default function OnboardingPage() {
     errors,
     loadingSavedProfile,
     loadSavedProfileError,
+    authRequired,
     next,
     back,
     reset,
@@ -69,7 +70,24 @@ export default function OnboardingPage() {
           <div className="nm-header">
             <span className="nm-logo">NutriMatch</span>
             <h1 className="nm-title">Preparation du formulaire</h1>
-            <p className="nm-sub">On verifie s'il existe deja un profil pour eviter de tout ressaisir.</p>
+            <p className="nm-sub">On verifie si un profil existe deja pour eviter de tout ressaisir.</p>
+          </div>
+        </Card>
+      </main>
+    );
+  }
+
+  if (authRequired) {
+    return (
+      <main className="nm-page">
+        <Card>
+          <div className="nm-header">
+            <span className="nm-logo">NutriMatch</span>
+            <h1 className="nm-title">Connexion requise</h1>
+            <p className="nm-sub">Connecte-toi avant de creer ou modifier ton profil nutritionnel.</p>
+          </div>
+          <div className="nm-actions">
+            <Button onClick={() => router.push("/login")}>Se connecter</Button>
           </div>
         </Card>
       </main>

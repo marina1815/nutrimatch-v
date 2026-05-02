@@ -227,3 +227,4 @@ export interface RecommendationTrace {
   externalTrace: Record<string, unknown>;
   candidates: RecommendationTraceMeal[];
 }
+

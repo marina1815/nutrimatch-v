@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ProfileMenu } from "@/components/layout/ProfileMenu";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,7 +15,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="fr" data-scroll-behavior="smooth">
-      <body>{children}</body>
+      <body>
+        <ProfileMenu />
+        {children}
+      </body>
     </html>
   );
 }

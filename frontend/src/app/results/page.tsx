@@ -26,6 +26,7 @@ export default function ResultsPage() {
   const [loadingExplanationMealId, setLoadingExplanationMealId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [requiresAuth, setRequiresAuth] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,7 +57,10 @@ export default function ResultsPage() {
         }
 
         if (err instanceof ApiError && err.status === 401) {
+          setRequiresAuth(true);
           setError("Connecte-toi pour consulter tes recommandations.");
+        } else if (err instanceof ApiError && err.status === 404) {
+          setError("Complete ton profil avant de consulter tes recommandations.");
         } else {
           setError(getSafeErrorMessage(err, "recommendations.load"));
         }
@@ -104,11 +108,6 @@ export default function ResultsPage() {
               Based on your profile, preferences, lifestyle and dietary constraints.
             </p>
           </div>
-
-          <div className="nm-inline-actions">
-            <Link href="/onboarding" className="nm-link-btn">Edit profile</Link>
-            <Link href="/profile" className="nm-link-btn nm-link-btn-primary">View profile</Link>
-          </div>
         </div>
 
         {trace && (
@@ -128,7 +127,7 @@ export default function ResultsPage() {
                 <strong>{String(trace.decisionSummary.rejected ?? 0)}</strong>
               </div>
               <div className="nm-keyval">
-                <span className="nm-muted">AI rerank</span>
+                <span className="nm-muted">AI advice</span>
                 <strong>{String(trace.decisionSummary.aiApplied ?? false)}</strong>
               </div>
             </div>
@@ -145,8 +144,11 @@ export default function ResultsPage() {
           <div className="nm-card">
             <p className="nm-error">{error}</p>
             <div className="nm-inline-actions">
-              <Link href="/login" className="nm-link-btn nm-link-btn-primary">Sign in</Link>
-              <Link href="/onboarding" className="nm-link-btn">Edit profile</Link>
+              {requiresAuth ? (
+                <Link href="/login" className="nm-link-btn nm-link-btn-primary">Sign in</Link>
+              ) : (
+                <Link href="/onboarding" className="nm-link-btn nm-link-btn-primary">Complete profile</Link>
+              )}
             </div>
           </div>
         )}
