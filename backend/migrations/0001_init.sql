@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS catalog.ingredient_aliases (
 CREATE TABLE IF NOT EXISTS catalog.intolerances (
     key text PRIMARY KEY,
     display_name text NOT NULL,
-    spoonacular_value text NOT NULL,
+    provider_value text NOT NULL,
     source text NOT NULL DEFAULT 'system',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
@@ -137,44 +137,10 @@ CREATE TABLE IF NOT EXISTS catalog.condition_aliases (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS catalog.meal_styles (
-    key text PRIMARY KEY,
-    display_name text NOT NULL,
-    source text NOT NULL DEFAULT 'system',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS catalog.meal_types (
-    key text PRIMARY KEY,
-    display_name text NOT NULL,
-    source text NOT NULL DEFAULT 'system',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
 CREATE TABLE IF NOT EXISTS catalog.diets (
     key text PRIMARY KEY,
     display_name text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS catalog.cuisines (
-    key text PRIMARY KEY,
-    display_name text NOT NULL,
-    source text NOT NULL DEFAULT 'system',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS catalog.spoonacular_param_map (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    domain text NOT NULL,
-    internal_key text NOT NULL,
-    spoonacular_param text NOT NULL,
-    spoonacular_value text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT spoonacular_param_map_unique UNIQUE (domain, internal_key, spoonacular_param)
 );
 
 CREATE TABLE IF NOT EXISTS catalog.medical_rules (
@@ -206,10 +172,6 @@ CREATE TABLE IF NOT EXISTS health.profiles (
     sex text NOT NULL CHECK (sex IN ('male', 'female')),
     weight numeric(6,2) NOT NULL CHECK (weight BETWEEN 20 AND 400),
     height numeric(6,2) NOT NULL CHECK (height BETWEEN 80 AND 250),
-    profession text NOT NULL,
-    profession_index text NOT NULL DEFAULT '',
-    city text NOT NULL,
-    city_index text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -220,7 +182,6 @@ CREATE TABLE IF NOT EXISTS health.lifestyles (
     activity_level text NOT NULL CHECK (activity_level IN ('sedentary', 'light', 'moderate', 'active')),
     lifestyle_type text NOT NULL CHECK (lifestyle_type IN ('student', 'employee', 'athlete', 'mixed', 'other')),
     goal text NOT NULL CHECK (goal IN ('weight_loss', 'muscle_gain', 'weight_maintenance', 'medical_diet', 'energy_maintenance')),
-    max_ready_time int NOT NULL DEFAULT 45 CHECK (max_ready_time BETWEEN 5 AND 240),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -228,7 +189,6 @@ CREATE TABLE IF NOT EXISTS health.lifestyles (
 CREATE TABLE IF NOT EXISTS health.preferences (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL UNIQUE REFERENCES identity.users(id) ON DELETE CASCADE,
-    meals_per_day int NOT NULL CHECK (meals_per_day BETWEEN 1 AND 8),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -250,28 +210,6 @@ CREATE TABLE IF NOT EXISTS health.profile_preference_ingredients (
     kind text NOT NULL CHECK (kind IN ('like', 'dislike', 'exclude')),
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, ingredient_key, kind)
-);
-
-CREATE TABLE IF NOT EXISTS health.profile_meal_styles (
-    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
-    meal_style_key text NOT NULL REFERENCES catalog.meal_styles(key) ON DELETE RESTRICT,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, meal_style_key)
-);
-
-CREATE TABLE IF NOT EXISTS health.profile_meal_types (
-    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
-    meal_type_key text NOT NULL REFERENCES catalog.meal_types(key) ON DELETE RESTRICT,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, meal_type_key)
-);
-
-CREATE TABLE IF NOT EXISTS health.profile_cuisines (
-    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
-    cuisine_key text NOT NULL REFERENCES catalog.cuisines(key) ON DELETE RESTRICT,
-    kind text NOT NULL CHECK (kind IN ('preferred', 'excluded')),
-    created_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, cuisine_key, kind)
 );
 
 CREATE TABLE IF NOT EXISTS health.profile_intolerances (
@@ -315,7 +253,7 @@ CREATE TABLE IF NOT EXISTS health.nutrition_profiles (
     max_sodium_mg_per_meal numeric(10,2) NOT NULL,
     derived_restrictions jsonb NOT NULL DEFAULT '[]',
     derived_excluded jsonb NOT NULL DEFAULT '[]',
-    recommended_meal_styles jsonb NOT NULL DEFAULT '[]',
+    derived_recommendation_tags jsonb NOT NULL DEFAULT '[]',
     metadata jsonb NOT NULL DEFAULT '{}',
     calculated_at timestamptz NOT NULL DEFAULT now(),
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -374,30 +312,64 @@ CREATE TABLE IF NOT EXISTS recommendation.candidates (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS recommendation.external_recipe_cache (
-    external_recipe_id text PRIMARY KEY,
-    source text NOT NULL DEFAULT 'spoonacular',
-    payload jsonb NOT NULL DEFAULT '{}',
-    fetched_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL
+CREATE TABLE IF NOT EXISTS recommendation.daily_sets (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    profile_id uuid NOT NULL REFERENCES health.profiles(id) ON DELETE CASCADE,
+    nutrition_profile_id uuid NOT NULL REFERENCES health.nutrition_profiles(id) ON DELETE CASCADE,
+    run_id uuid NOT NULL REFERENCES recommendation.runs(id) ON DELETE CASCADE,
+    query_signature text NOT NULL,
+    status text NOT NULL DEFAULT 'completed',
+    selection_mode text NOT NULL DEFAULT 'deterministic_fallback',
+    valid_from timestamptz NOT NULL,
+    valid_until timestamptz NOT NULL,
+    source_summary jsonb NOT NULL DEFAULT '{}',
+    decision_summary jsonb NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS recommendation.search_response_cache (
-    cache_key text PRIMARY KEY,
-    source text NOT NULL DEFAULT 'spoonacular',
-    payload jsonb NOT NULL DEFAULT '{}',
-    fetched_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL
+CREATE TABLE IF NOT EXISTS recommendation.daily_set_meals (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    set_id uuid NOT NULL REFERENCES recommendation.daily_sets(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    profile_id uuid NOT NULL REFERENCES health.profiles(id) ON DELETE CASCADE,
+    recipe_id text NOT NULL,
+    title text NOT NULL,
+    final_rank int NOT NULL DEFAULT 0,
+    final_score numeric(10,2) NOT NULL DEFAULT 0,
+    calories numeric(10,2) NOT NULL DEFAULT 0,
+    protein numeric(10,2) NOT NULL DEFAULT 0,
+    carbs numeric(10,2) NOT NULL DEFAULT 0,
+    fat numeric(10,2) NOT NULL DEFAULT 0,
+    sugar numeric(10,2) NOT NULL DEFAULT 0,
+    sodium_mg numeric(10,2) NOT NULL DEFAULT 0,
+    ingredients jsonb NOT NULL DEFAULT '[]',
+    ai_explanation text NOT NULL DEFAULT '',
+    match_reason text NOT NULL DEFAULT '',
+    nutrition_confidence text NOT NULL DEFAULT 'estimated',
+    nutrition_source text NOT NULL DEFAULT 'local_catalog_nutrition_estimate',
+    safety_warnings jsonb NOT NULL DEFAULT '[]',
+    source_provenance jsonb NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT daily_set_meals_set_recipe_unique UNIQUE (set_id, recipe_id)
 );
 
-CREATE TABLE IF NOT EXISTS recommendation.ingredient_resolution_cache (
-    normalized_query text PRIMARY KEY,
-    ingredient_key text NOT NULL REFERENCES catalog.ingredients(key) ON DELETE RESTRICT,
-    source text NOT NULL DEFAULT 'spoonacular',
-    confidence numeric(5,4) NOT NULL DEFAULT 0,
-    payload jsonb NOT NULL DEFAULT '{}',
-    fetched_at timestamptz NOT NULL DEFAULT now(),
-    expires_at timestamptz NOT NULL
+CREATE TABLE IF NOT EXISTS recommendation.recipe_choices (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    set_id uuid NOT NULL REFERENCES recommendation.daily_sets(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES identity.users(id) ON DELETE CASCADE,
+    profile_id uuid NOT NULL REFERENCES health.profiles(id) ON DELETE CASCADE,
+    recipe_id text NOT NULL,
+    title text NOT NULL,
+    ingredients jsonb NOT NULL DEFAULT '[]',
+    preparation_guide text NOT NULL DEFAULT '',
+    substitutions jsonb NOT NULL DEFAULT '{}',
+    ai_applied boolean NOT NULL DEFAULT false,
+    ai_skipped_reason text NOT NULL DEFAULT '',
+    ai_output_ignored_reason text NOT NULL DEFAULT '',
+    chosen_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS recommendation.profile_embeddings (
@@ -416,7 +388,7 @@ CREATE TABLE IF NOT EXISTS recommendation.profile_embeddings (
 CREATE TABLE IF NOT EXISTS recommendation.recipe_embeddings (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     external_recipe_id text NOT NULL,
-    source text NOT NULL DEFAULT 'spoonacular',
+    source text NOT NULL DEFAULT 'local_catalog',
     embedding_version text NOT NULL,
     source_hash text NOT NULL,
     embedding vector(768),
@@ -479,22 +451,23 @@ CREATE INDEX IF NOT EXISTS idx_intolerance_aliases_key ON catalog.intolerance_al
 CREATE INDEX IF NOT EXISTS idx_condition_aliases_key ON catalog.condition_aliases(condition_key);
 CREATE INDEX IF NOT EXISTS idx_medical_rules_condition_key ON catalog.medical_rules(condition_key);
 CREATE INDEX IF NOT EXISTS idx_profile_preference_ingredients_kind ON health.profile_preference_ingredients(user_id, kind);
-CREATE INDEX IF NOT EXISTS idx_profile_meal_styles_user_id ON health.profile_meal_styles(user_id);
 CREATE INDEX IF NOT EXISTS idx_profile_intolerances_user_id ON health.profile_intolerances(user_id);
 CREATE INDEX IF NOT EXISTS idx_profile_conditions_user_id ON health.profile_conditions(user_id);
 CREATE INDEX IF NOT EXISTS idx_profile_chronic_conditions_user_id ON health.profile_chronic_conditions(user_id);
 CREATE INDEX IF NOT EXISTS idx_nutrition_profiles_user_id ON health.nutrition_profiles(user_id);
-CREATE INDEX IF NOT EXISTS idx_profiles_profession_index ON health.profiles(profession_index);
-CREATE INDEX IF NOT EXISTS idx_profiles_city_index ON health.profiles(city_index);
 CREATE INDEX IF NOT EXISTS idx_constraints_medications_index ON health.constraints(medications_index);
 CREATE INDEX IF NOT EXISTS idx_profile_snapshots_profile_id ON health.profile_snapshots(profile_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recommendation_runs_profile_id ON recommendation.runs(profile_id);
 CREATE INDEX IF NOT EXISTS idx_recommendation_runs_query_signature ON recommendation.runs(query_signature);
 CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_run_id ON recommendation.candidates(run_id);
 CREATE INDEX IF NOT EXISTS idx_recommendation_candidates_profile_recipe ON recommendation.candidates(profile_id, external_recipe_id);
-CREATE INDEX IF NOT EXISTS idx_external_recipe_cache_expires_at ON recommendation.external_recipe_cache(expires_at);
-CREATE INDEX IF NOT EXISTS idx_search_response_cache_expires_at ON recommendation.search_response_cache(expires_at);
-CREATE INDEX IF NOT EXISTS idx_ingredient_resolution_cache_expires_at ON recommendation.ingredient_resolution_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_daily_sets_active ON recommendation.daily_sets(user_id, profile_id, valid_until DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_sets_profile_created ON recommendation.daily_sets(profile_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_set_meals_set_rank ON recommendation.daily_set_meals(set_id, final_rank ASC);
+CREATE INDEX IF NOT EXISTS idx_daily_set_meals_profile_recipe ON recommendation.daily_set_meals(profile_id, recipe_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_choices_user_recipe_expires ON recommendation.recipe_choices(user_id, profile_id, recipe_id, expires_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recipe_choices_expires_at ON recommendation.recipe_choices(expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recipe_choices_one_per_set ON recommendation.recipe_choices(set_id);
 CREATE INDEX IF NOT EXISTS idx_profile_embeddings_profile_id ON recommendation.profile_embeddings(profile_id);
 CREATE INDEX IF NOT EXISTS idx_recipe_embeddings_recipe_id ON recommendation.recipe_embeddings(external_recipe_id);
 CREATE INDEX IF NOT EXISTS idx_profile_embeddings_vector_cosine ON recommendation.profile_embeddings USING hnsw (embedding vector_cosine_ops);
@@ -507,20 +480,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_occurred_at ON security.audit_events
 CREATE INDEX IF NOT EXISTS idx_auth_failures_email_hash ON security.auth_failures(email_hash);
 CREATE INDEX IF NOT EXISTS idx_auth_failures_ip_hash ON security.auth_failures(ip_hash);
 
-INSERT INTO catalog.meal_styles (key, display_name, source) VALUES
-    ('traditional', 'Traditional', 'system'),
-    ('healthy', 'Healthy', 'system'),
-    ('middle eastern', 'Middle Eastern', 'system'),
-    ('modern', 'Modern', 'system'),
-    ('cold', 'Cold Meals', 'system'),
-    ('quick', 'Quick', 'system'),
-    ('balanced', 'Balanced', 'system'),
-    ('high-protein', 'High Protein', 'system'),
-    ('low-sodium', 'Low Sodium', 'system'),
-    ('low-sugar', 'Low Sugar', 'system')
-ON CONFLICT (key) DO NOTHING;
-
-INSERT INTO catalog.intolerances (key, display_name, spoonacular_value, source) VALUES
+INSERT INTO catalog.intolerances (key, display_name, provider_value, source) VALUES
     ('dairy', 'Dairy', 'dairy', 'system'),
     ('egg', 'Egg', 'egg', 'system'),
     ('gluten', 'Gluten', 'gluten', 'system'),
@@ -541,24 +501,8 @@ INSERT INTO catalog.conditions (key, display_name, source) VALUES
     ('cardiac', 'Cardiac disease', 'system'),
     ('renal_failure', 'Renal failure', 'system'),
     ('hypercholesterolemia', 'Hypercholesterolemia', 'system'),
-    ('digestive_sensitivity', 'Digestive sensitivity', 'system'),
-    ('other', 'Other', 'system')
+    ('digestive_sensitivity', 'Digestive sensitivity', 'system')
 ON CONFLICT (key) DO NOTHING;
-
-INSERT INTO catalog.spoonacular_param_map (domain, internal_key, spoonacular_param, spoonacular_value) VALUES
-    ('intolerance', 'tree_nut', 'intolerances', 'tree nut'),
-    ('intolerance', 'shellfish', 'intolerances', 'shellfish'),
-    ('intolerance', 'dairy', 'intolerances', 'dairy'),
-    ('intolerance', 'egg', 'intolerances', 'egg'),
-    ('intolerance', 'gluten', 'intolerances', 'gluten'),
-    ('intolerance', 'grain', 'intolerances', 'grain'),
-    ('intolerance', 'peanut', 'intolerances', 'peanut'),
-    ('intolerance', 'seafood', 'intolerances', 'seafood'),
-    ('intolerance', 'sesame', 'intolerances', 'sesame'),
-    ('intolerance', 'soy', 'intolerances', 'soy'),
-    ('intolerance', 'sulfite', 'intolerances', 'sulfite'),
-    ('intolerance', 'wheat', 'intolerances', 'wheat')
-ON CONFLICT (domain, internal_key, spoonacular_param) DO NOTHING;
 
 INSERT INTO catalog.medical_rules (
     code,
@@ -681,13 +625,166 @@ INSERT INTO catalog.medical_rules (
     )
 ON CONFLICT (code) DO NOTHING;
 
+INSERT INTO catalog.medical_rules (
+    code,
+    condition_key,
+    medication_pattern,
+    blocked_ingredients,
+    blocked_tags,
+    required_tags,
+    max_calories,
+    max_protein_grams,
+    max_carbs_grams,
+    max_fat_grams,
+    max_sugar_grams,
+    max_sodium_mg,
+    min_protein_grams,
+    severity,
+    rationale
+) VALUES
+    (
+        'diabetes_sugar_control',
+        'diabetes',
+        '',
+        '["sugar","brown sugar","palm sugar","molasses","glucose fructose syrup","fructose powder","jam","candies","sweetened drinks","sweetened sodas","fruit syrup"]',
+        '["diabetes-risk","sugary","sweetened","high-sugar","refined-carb"]',
+        '[]',
+        0,
+        0,
+        60,
+        0,
+        16,
+        0,
+        14,
+        'critical',
+        'Limit high sugar and refined carbohydrate meals for diabetic profiles while preserving enough protein for satiety.'
+    ),
+    (
+        'hypertension_sodium_control',
+        'hypertension',
+        '',
+        '["bacon","sausage","pancetta","salted meats","anchovy","pickled vegetables","soy sauce","tamari"]',
+        '["hypertension-risk","high-sodium","salty","processed-meat"]',
+        '[]',
+        0,
+        0,
+        0,
+        0,
+        0,
+        700,
+        0,
+        'critical',
+        'Block sodium-heavy ingredients and meals for hypertensive profiles.'
+    ),
+    (
+        'cardiac_fat_control',
+        'cardiac',
+        '',
+        '["fried chicken","bacon","sausage","pancetta","lard","butter","cream","offal"]',
+        '["cardiac-risk","cholesterol-risk","fried","high-fat","saturated-fat","processed-meat","high-sodium"]',
+        '[]',
+        850,
+        0,
+        0,
+        24,
+        0,
+        800,
+        0,
+        'high',
+        'Reduce saturated fat, fried meals and sodium load for cardiac profiles.'
+    ),
+    (
+        'renal_failure_protein_sodium_control',
+        'renal_failure',
+        '',
+        '["anchovy","offal","liver","kidney","bouzelouf","daouara","salted meats","processed meat"]',
+        '["renal-risk","high-sodium","purine-rich","potassium-rich","phosphorus-rich"]',
+        '[]',
+        0,
+        30,
+        0,
+        22,
+        0,
+        600,
+        0,
+        'critical',
+        'Control protein, purine, potassium/phosphorus risk markers and sodium for renal profiles.'
+    ),
+    (
+        'hypercholesterolemia_lipid_control',
+        'hypercholesterolemia',
+        '',
+        '["butter","cream","lard","bacon","sausage","pancetta","offal","fried chicken"]',
+        '["cholesterol-risk","saturated-fat","fried","high-fat","processed-meat"]',
+        '[]',
+        0,
+        0,
+        0,
+        22,
+        0,
+        850,
+        0,
+        'high',
+        'Avoid meals likely to be rich in saturated fat or cholesterol for hypercholesterolemia.'
+    ),
+    (
+        'digestive_sensitivity_gentle_control',
+        'digestive_sensitivity',
+        '',
+        '["green chili","dried chilies","cayenne pepper","hot sauce"]',
+        '["digestive-risk","very-spicy","gas-forming","fried","high-fat"]',
+        '[]',
+        0,
+        0,
+        0,
+        22,
+        0,
+        0,
+        0,
+        'high',
+        'Avoid spicy, gas-forming and high-fat meals for digestive sensitivity.'
+    ),
+    (
+        'warfarin_vitamin_k_guard',
+        '',
+        'warfarin',
+        '["spinach","kale","parsley","cabbage","broccoli","brussels sprout","collard greens"]',
+        '["vitamin-k-rich"]',
+        '[]',
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        'high',
+        'Flag vitamin K rich ingredients when a warfarin-like treatment is declared.'
+    )
+ON CONFLICT (code) DO UPDATE SET
+    condition_key = EXCLUDED.condition_key,
+    medication_pattern = EXCLUDED.medication_pattern,
+    blocked_ingredients = EXCLUDED.blocked_ingredients,
+    blocked_tags = EXCLUDED.blocked_tags,
+    required_tags = EXCLUDED.required_tags,
+    max_calories = EXCLUDED.max_calories,
+    max_protein_grams = EXCLUDED.max_protein_grams,
+    max_carbs_grams = EXCLUDED.max_carbs_grams,
+    max_fat_grams = EXCLUDED.max_fat_grams,
+    max_sugar_grams = EXCLUDED.max_sugar_grams,
+    max_sodium_mg = EXCLUDED.max_sodium_mg,
+    min_protein_grams = EXCLUDED.min_protein_grams,
+    severity = EXCLUDED.severity,
+    rationale = EXCLUDED.rationale,
+    active = true,
+    updated_at = now();
+
 INSERT INTO security.audit_policies (key, value, description) VALUES
     ('retention_days', '365', 'Minimum retention for security audit events before archival review.'),
     ('auth_failure_retention_days', '30', 'Authentication failures are retained for abuse investigation and then deleted.'),
     ('rate_limit_bucket_retention_hours', '24', 'Inactive token bucket state is short-lived and purged.'),
     ('session_retention_days', '30', 'Revoked and expired sessions are retained for short-lived security investigation.'),
     ('recommendation_trace_retention_days', '90', 'Recommendation traces are retained long enough for explainability and incident review.'),
-    ('cache_retention_hours', '24', 'External API caches must expire quickly and must not store secrets.'),
     ('hash_chain', 'sha256_previous_hash', 'Every event is chained to the previous event hash for tamper evidence.'),
     ('pii_strategy', 'fingerprint_ip_user_agent', 'Network identifiers are fingerprinted before persistence.'),
     ('access_control', 'owner_abac_default_deny', 'All sensitive resources require authenticated owner context and explicit action/sensitivity policy.'),
@@ -700,18 +797,16 @@ ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, description = EXCLUDED.d
 -- +goose StatementBegin
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
-        CREATE ROLE app LOGIN PASSWORD 'password123';
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
+        GRANT USAGE ON SCHEMA identity, catalog, health, recommendation, security TO app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity, catalog, health, recommendation TO app;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON security.auth_failures, security.rate_limit_buckets TO app;
+        GRANT SELECT ON security.audit_policies TO app;
+        GRANT SELECT, INSERT ON security.audit_events TO app;
     END IF;
 END
 $$;
 -- +goose StatementEnd
-
-GRANT USAGE ON SCHEMA identity, catalog, health, recommendation, security TO app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA identity, catalog, health, recommendation TO app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON security.auth_failures, security.rate_limit_buckets TO app;
-GRANT SELECT ON security.audit_policies TO app;
-GRANT SELECT, INSERT ON security.audit_events TO app;
 
 -- +goose Down
 DROP SCHEMA IF EXISTS recommendation CASCADE;

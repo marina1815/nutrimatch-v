@@ -21,7 +21,7 @@ func (ProfileEmbedding) TableName() string {
 type RecipeEmbedding struct {
 	ID               string    `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
 	ExternalRecipeID string    `gorm:"not null"`
-	Source           string    `gorm:"not null;default:'spoonacular'"`
+	Source           string    `gorm:"not null;default:'local_catalog'"`
 	EmbeddingVersion string    `gorm:"not null"`
 	SourceHash       string    `gorm:"not null"`
 	Embedding        string    `gorm:"type:vector(768)"`

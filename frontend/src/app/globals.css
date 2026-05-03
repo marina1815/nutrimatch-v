@@ -254,11 +254,6 @@ select {
   line-height: 1.4;
 }
 
-.nm-suggestion small {
-  color: var(--muted);
-  font-size: 0.72rem;
-}
-
 .nm-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -305,6 +300,17 @@ select {
   display: flex;
   gap: 1rem;
   flex-wrap: wrap;
+}
+
+.nm-form-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 30;
+  margin: 0 -2rem -2rem;
+  padding: 1rem 2rem 2rem;
+  border-top: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(17, 24, 17, 0.72), var(--surface) 35%);
+  backdrop-filter: blur(10px);
 }
 
 .nm-progress {
@@ -631,6 +637,11 @@ a.nm-link-btn-primary:hover {
 
   .nm-card {
     padding: 1.25rem;
+  }
+
+  .nm-form-actions {
+    margin: 0 -1.25rem -1.25rem;
+    padding: 0.85rem 1.25rem 1.25rem;
   }
 }
 

@@ -9,10 +9,13 @@ type Props = React.SelectHTMLAttributes<HTMLSelectElement> & {
 };
 
 export function Select({ label, options, error, ...props }: Props) {
+  const generatedID = React.useId();
+  const id = props.id ?? generatedID;
+
   return (
     <div className="nm-field">
-      <label className="nm-label">{label}</label>
-      <select className={`nm-input ${error ? "nm-input-error" : ""}`} {...props}>
+      <label className="nm-label" htmlFor={id}>{label}</label>
+      <select id={id} className={`nm-input ${error ? "nm-input-error" : ""}`} {...props}>
         <option value="">Select...</option>
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>

@@ -3,11 +3,12 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/marina1815/nutrimatch/internal/clients/spoonacular"
+	"github.com/marina1815/nutrimatch/internal/catalog"
 	"github.com/marina1815/nutrimatch/internal/models"
 	"github.com/marina1815/nutrimatch/internal/repository"
 )
@@ -200,41 +201,68 @@ func (m *fakeTxManager) WithinTransaction(_ context.Context, fn func(repository.
 	return fn(m.repos)
 }
 
-type fakeRecipeSearcher struct {
-	called    bool
-	opts      []spoonacular.SearchOptions
-	responses []*spoonacular.SearchResponse
-	resp      *spoonacular.SearchResponse
-	err       error
+type fakeLocalRecipeRepositoryForService struct {
+	called     bool
+	candidates []repository.LocalRecipeCandidate
+	err        error
 }
 
 type fakeAITextGenerator struct {
-	text   string
-	err    error
-	prompt string
+	text    string
+	texts   []string
+	err     error
+	errs    []error
+	prompt  string
+	prompts []string
 }
 
-func (s *fakeRecipeSearcher) Search(_ context.Context, opts spoonacular.SearchOptions) (*spoonacular.SearchResponse, error) {
-	s.called = true
-	s.opts = append(s.opts, opts)
-	if s.err != nil {
-		return nil, s.err
+func (r *fakeLocalRecipeRepositoryForService) Search(_ context.Context, _ repository.LocalRecipeQuery) ([]repository.LocalRecipeCandidate, error) {
+	r.called = true
+	if r.err != nil {
+		return nil, r.err
 	}
-	if len(s.responses) > 0 {
-		resp := s.responses[0]
-		s.responses = s.responses[1:]
-		return resp, nil
+	if len(r.candidates) > 0 {
+		return r.candidates, nil
 	}
-	if s.resp != nil {
-		return s.resp, nil
-	}
-	return &spoonacular.SearchResponse{}, nil
+	return []repository.LocalRecipeCandidate{{
+		ID:          "101",
+		Title:       "Chicken Quinoa Bowl",
+		Ingredients: []string{"chicken", "quinoa"},
+		Calories:    520,
+		Protein:     42,
+		Carbs:       42,
+		Fat:         14,
+		Sugar:       8,
+		SodiumMg:    380,
+		Score:       50,
+	}}, nil
+}
+
+func (r *fakeLocalRecipeRepositoryForService) SuggestIngredients(_ context.Context, _ string, _ int) ([]repository.CatalogOption, error) {
+	return []repository.CatalogOption{}, nil
+}
+
+func (r *fakeLocalRecipeRepositoryForService) ListAllergies(_ context.Context) ([]repository.CatalogOption, error) {
+	return []repository.CatalogOption{}, nil
 }
 
 func (g *fakeAITextGenerator) GenerateText(_ context.Context, prompt string) (string, error) {
 	g.prompt = prompt
+	g.prompts = append(g.prompts, prompt)
+	if len(g.errs) > 0 {
+		err := g.errs[0]
+		g.errs = g.errs[1:]
+		if err != nil {
+			return "", err
+		}
+	}
 	if g.err != nil {
 		return "", g.err
+	}
+	if len(g.texts) > 0 {
+		text := g.texts[0]
+		g.texts = g.texts[1:]
+		return text, nil
 	}
 	return g.text, nil
 }
@@ -276,61 +304,6 @@ func TestFallbackSearchPlanKeepsSafetyExclusionsOnly(t *testing.T) {
 	}
 	if !containsString(fallback.Exclude, "peanut") || !containsString(fallback.Exclude, "grapefruit") {
 		t.Fatalf("expected fallback to keep safety exclusions, got %v", fallback.Exclude)
-	}
-}
-
-func TestBuildSearchOptionsFallbackRelaxesProviderBoundsButKeepsSafetyControls(t *testing.T) {
-	opts := buildSearchOptions(
-		searchPlan{
-			Name:             "fallback_goal_candidates",
-			Query:            "high protein",
-			Include:          []string{"chicken"},
-			Exclude:          []string{"mushroom", "peanut", "grapefruit"},
-			HardExclude:      []string{"peanut", "grapefruit"},
-			MealTypes:        []string{"main course"},
-			PreferredCuisine: []string{"mediterranean"},
-			Fallback:         true,
-			RelaxTaste:       true,
-			RelaxNutrition:   true,
-			Number:           25,
-		},
-		&models.Lifestyle{MaxReadyTime: 25},
-		&models.Preferences{ExcludedCuisines: models.StringSlice{"american"}},
-		&models.Constraints{Allergies: models.StringSlice{"peanut"}},
-		&models.NutritionProfile{
-			MaxMealCalories:    600,
-			MinProteinPerMeal:  40,
-			MaxCarbsPerMeal:    50,
-			MaxFatPerMeal:      20,
-			MaxSugarPerMeal:    10,
-			MaxSodiumMgPerMeal: 600,
-		},
-		nil,
-	)
-
-	if len(opts.IncludeIngredients) != 0 {
-		t.Fatalf("expected fallback to drop include ingredients, got %v", opts.IncludeIngredients)
-	}
-	if containsString(opts.ExcludeIngredients, "mushroom") {
-		t.Fatalf("expected fallback to drop soft dislikes from provider exclusions")
-	}
-	if !containsString(opts.ExcludeIngredients, "peanut") || !containsString(opts.ExcludeIngredients, "grapefruit") {
-		t.Fatalf("expected fallback to keep hard exclusions, got %v", opts.ExcludeIngredients)
-	}
-	if opts.Type != "" || len(opts.Cuisine) != 0 || len(opts.ExcludeCuisine) != 0 {
-		t.Fatalf("expected fallback to relax taste filters, got type=%q cuisine=%v excludeCuisine=%v", opts.Type, opts.Cuisine, opts.ExcludeCuisine)
-	}
-	if opts.MaxCalories != 0 || opts.MinProtein != 0 || opts.MaxCarbs != 0 || opts.MaxFat != 0 || opts.MaxSugar != 0 || opts.MaxSodium != 0 {
-		t.Fatalf("expected fallback to omit provider nutrient bounds, got %+v", opts)
-	}
-	if opts.MaxReadyTime != 60 {
-		t.Fatalf("expected fallback to relax very short ready time to 60, got %d", opts.MaxReadyTime)
-	}
-	if opts.Number != 25 {
-		t.Fatalf("expected fallback candidate pool size 25, got %d", opts.Number)
-	}
-	if !containsString(opts.Intolerances, "peanut") {
-		t.Fatalf("expected allergy intolerance to remain in provider search, got %v", opts.Intolerances)
 	}
 }
 
@@ -395,21 +368,21 @@ func TestRecommendationServiceRejectsForeignProfileID(t *testing.T) {
 	profileRepo := &fakeProfileRepository{
 		profile:     &models.Profile{ID: "owned-profile", UserID: "user-1", Age: 25},
 		lifestyle:   &models.Lifestyle{UserID: "user-1", Goal: "weight_loss", ActivityLevel: "light"},
-		preferences: &models.Preferences{UserID: "user-1", MealsPerDay: 3},
+		preferences: &models.Preferences{UserID: "user-1"},
 		constraints: &models.Constraints{UserID: "user-1"},
 	}
-	searcher := &fakeRecipeSearcher{}
+	localRecipes := &fakeLocalRecipeRepositoryForService{}
 	service := &RecommendationService{
-		Profiles: &ProfileService{Users: userRepo, Profiles: profileRepo},
-		Recipes:  searcher,
+		Profiles:     &ProfileService{Users: userRepo, Profiles: profileRepo},
+		LocalRecipes: localRecipes,
 	}
 
 	_, err := service.GetRecommendations(context.Background(), "user-1", "other-profile", "req-1")
 	if !errors.Is(err, ErrProfileAccessDenied) {
 		t.Fatalf("expected ErrProfileAccessDenied, got %v", err)
 	}
-	if searcher.called {
-		t.Fatalf("expected recipe search not to run for foreign profile IDs")
+	if localRecipes.called {
+		t.Fatalf("expected local recipe search not to run for foreign profile IDs")
 	}
 }
 
@@ -439,12 +412,12 @@ func TestEvaluateCandidateRejectsMissingRequiredMedicalTag(t *testing.T) {
 		},
 		&SimilaritySignals{},
 		enrichedRecipe{
-			recipe: spoonacular.Recipe{
+			recipe: catalog.Recipe{
 				ID:      10,
 				Title:   "Vegetable salad",
 				Summary: "Fresh vegetables",
-				Nutrition: spoonacular.Nutrition{
-					Nutrients: []spoonacular.Nutrient{
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
 						{Name: "Calories", Amount: 320},
 						{Name: "Protein", Amount: 8},
 						{Name: "Carbohydrates", Amount: 22},
@@ -453,7 +426,7 @@ func TestEvaluateCandidateRejectsMissingRequiredMedicalTag(t *testing.T) {
 						{Name: "Sodium", Amount: 250},
 					},
 				},
-				ExtendedIngredients: []spoonacular.Ingredient{{Name: "lettuce"}},
+				ExtendedIngredients: []catalog.Ingredient{{Name: "lettuce"}},
 			},
 		},
 	)
@@ -492,12 +465,12 @@ func TestEvaluateCandidateRejectsMedicalProteinCeiling(t *testing.T) {
 		},
 		&SimilaritySignals{},
 		enrichedRecipe{
-			recipe: spoonacular.Recipe{
+			recipe: catalog.Recipe{
 				ID:      11,
 				Title:   "Chicken bowl",
 				Summary: "High protein meal",
-				Nutrition: spoonacular.Nutrition{
-					Nutrients: []spoonacular.Nutrient{
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
 						{Name: "Calories", Amount: 480},
 						{Name: "Protein", Amount: 38},
 						{Name: "Carbohydrates", Amount: 25},
@@ -506,7 +479,7 @@ func TestEvaluateCandidateRejectsMedicalProteinCeiling(t *testing.T) {
 						{Name: "Sodium", Amount: 300},
 					},
 				},
-				ExtendedIngredients: []spoonacular.Ingredient{{Name: "chicken"}},
+				ExtendedIngredients: []catalog.Ingredient{{Name: "chicken"}},
 			},
 		},
 	)
@@ -516,82 +489,210 @@ func TestEvaluateCandidateRejectsMedicalProteinCeiling(t *testing.T) {
 	}
 }
 
-func TestApplyAIAdviceValidatesIDsAndPreservesDeterministicExplanation(t *testing.T) {
-	ai := &fakeAITextGenerator{
-		text: `[{"id":"meal-1","verdict":"pass","explanation":"Closer to stated healthy preferences."},{"id":"ghost","verdict":"pass","explanation":"Should be ignored"}]`,
+func TestEvaluateCandidateRejectsHypercholesterolemiaAndDigestiveTags(t *testing.T) {
+	service := &RecommendationService{}
+	profile := &models.NutritionProfile{
+		MaxMealCalories:    1200,
+		MinProteinPerMeal:  0,
+		MaxCarbsPerMeal:    140,
+		MaxFatPerMeal:      80,
+		MaxSugarPerMeal:    60,
+		MaxSodiumMgPerMeal: 1500,
 	}
-	service := &RecommendationService{AI: ai}
-	candidates := []*models.RecommendationCandidate{
-		{
-			ExternalRecipeID: "meal-1",
-			Title:            "Chicken Bowl",
-			Accepted:         true,
-			FinalScore:       50,
-			Explanation:      "Selected because passes deterministic profile validation",
-			Ingredients:      models.StringSlice{"chicken", "quinoa"},
-			Tags:             models.StringSlice{"healthy", "balanced"},
-			SourceProvenance: models.JSONMap{},
+
+	cholesterolCandidate := service.evaluateCandidate(
+		context.Background(),
+		"run-1",
+		"user-1",
+		"profile-1",
+		&models.Lifestyle{Goal: "medical_diet", ActivityLevel: "light"},
+		&models.Preferences{},
+		&models.Constraints{},
+		profile,
+		[]models.MedicalRule{
+			{
+				Code:        "hypercholesterolemia_lipid_control",
+				BlockedTags: models.StringSlice{"cholesterol-risk", "saturated-fat"},
+			},
 		},
+		&SimilaritySignals{},
+		enrichedRecipe{
+			recipe: catalog.Recipe{
+				ID:      12,
+				Title:   "Creamy bacon pasta",
+				Summary: "Butter, cream and bacon.",
+				Nutrition: catalog.Nutrition{Nutrients: []catalog.Nutrient{
+					{Name: "Calories", Amount: 780},
+					{Name: "Protein", Amount: 22},
+					{Name: "Carbohydrates", Amount: 70},
+					{Name: "Fat", Amount: 32},
+					{Name: "Sugar", Amount: 7},
+					{Name: "Sodium", Amount: 820},
+				}},
+				ExtendedIngredients: []catalog.Ingredient{{Name: "bacon"}, {Name: "cream"}, {Name: "butter"}},
+			},
+		},
+	)
+	if cholesterolCandidate.Accepted {
+		t.Fatalf("expected cholesterol-risk candidate to be rejected")
 	}
 
-	service.applyAIAdvice(context.Background(), &models.Lifestyle{
-		Goal:          "weight_loss",
-		ActivityLevel: "light",
-	}, &models.Preferences{
-		Likes:      models.StringSlice{"chicken", "quinoa"},
-		MealStyles: models.StringSlice{"healthy"},
-	}, candidates)
-
-	if candidates[0].FinalScore != 50 {
-		t.Fatalf("expected AI advice not to change deterministic score, got %v", candidates[0].FinalScore)
-	}
-	if !strings.Contains(candidates[0].Explanation, "Selected because") || !strings.Contains(candidates[0].Explanation, "AI advice:") {
-		t.Fatalf("expected deterministic explanation to be preserved and augmented, got %q", candidates[0].Explanation)
-	}
-	if _, ok := candidates[0].SourceProvenance["aiAdvice"]; !ok {
-		t.Fatalf("expected validated AI provenance metadata")
-	}
-	if strings.Contains(strings.ToLower(ai.prompt), "medication") || strings.Contains(strings.ToLower(ai.prompt), "condition") {
-		t.Fatalf("expected minimized prompt without sensitive health details, got %q", ai.prompt)
+	digestiveCandidate := service.evaluateCandidate(
+		context.Background(),
+		"run-2",
+		"user-1",
+		"profile-1",
+		&models.Lifestyle{Goal: "medical_diet", ActivityLevel: "light"},
+		&models.Preferences{},
+		&models.Constraints{},
+		profile,
+		[]models.MedicalRule{
+			{
+				Code:        "digestive_sensitivity_gentle_control",
+				BlockedTags: models.StringSlice{"digestive-risk", "gas-forming", "very-spicy"},
+			},
+		},
+		&SimilaritySignals{},
+		enrichedRecipe{
+			recipe: catalog.Recipe{
+				ID:      13,
+				Title:   "Spicy bean cabbage bowl",
+				Summary: "Green chili, beans and cabbage.",
+				Nutrition: catalog.Nutrition{Nutrients: []catalog.Nutrient{
+					{Name: "Calories", Amount: 440},
+					{Name: "Protein", Amount: 20},
+					{Name: "Carbohydrates", Amount: 48},
+					{Name: "Fat", Amount: 12},
+					{Name: "Sugar", Amount: 5},
+					{Name: "Sodium", Amount: 430},
+				}},
+				ExtendedIngredients: []catalog.Ingredient{{Name: "beans"}, {Name: "cabbage"}, {Name: "green chili"}},
+			},
+		},
+	)
+	if digestiveCandidate.Accepted {
+		t.Fatalf("expected digestive-risk candidate to be rejected")
 	}
 }
 
-func TestApplyAIAdviceReturnsFalseWhenAIUnavailable(t *testing.T) {
-	ai := &fakeAITextGenerator{err: errors.New("upstream unavailable")}
-	service := &RecommendationService{AI: ai}
+func TestSelectDailyCandidatesUsesOnlySafePoolAndPreservesScores(t *testing.T) {
+	now := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
 	candidates := []*models.RecommendationCandidate{
-		{
-			ExternalRecipeID: "meal-1",
-			Title:            "Chicken Bowl",
-			Accepted:         true,
-			FinalScore:       50,
-			Explanation:      "Selected because passes deterministic profile validation",
-			SourceProvenance: models.JSONMap{},
-		},
+		dailyCandidate("meal-1", 50),
+		dailyCandidate("meal-2", 40),
+		dailyCandidate("meal-3", 30),
+		dailyCandidate("meal-4", 20),
+		dailyCandidate("meal-5", 10),
 	}
-
-	applied := service.applyAIAdvice(context.Background(), &models.Lifestyle{
-		Goal:          "weight_loss",
-		ActivityLevel: "light",
-	}, &models.Preferences{
-		Likes:      models.StringSlice{"chicken"},
-		MealStyles: models.StringSlice{"healthy"},
-	}, candidates)
-
-	if applied {
-		t.Fatalf("expected ai advice to report false when AI is unavailable")
+	seed := stableSeed("user-1", "profile-1", now.Format("2006-01-02"))
+	expectedPoolOrder := deterministicWeightedPick(candidates, len(candidates), seed)
+	items := make([]string, 0, len(expectedPoolOrder))
+	for _, candidate := range expectedPoolOrder {
+		items = append(items, `{"mealId":"`+candidate.ExternalRecipeID+`","recommended":true,"rejectionReason":"","explanation":"Explication valide en francais."}`)
 	}
-	if candidates[0].FinalScore != 50 {
-		t.Fatalf("expected deterministic score to remain unchanged, got %v", candidates[0].FinalScore)
+	service := &RecommendationService{AI: &fakeAITextGenerator{text: `[` + strings.Join(items, ",") + `]`}}
+
+	selected, result, mode := service.selectDailyCandidatesAndExplain(context.Background(), "user-1", "profile-1", candidates, now)
+
+	if mode != "backend_random_ai_validated" || !result.Applied || !result.ValidationApplied || result.IgnoredReason != "" || result.SkippedReason != "" {
+		t.Fatalf("expected backend-random AI validation, got mode=%s result=%+v", mode, result)
+	}
+	if len(selected) != len(candidates) {
+		t.Fatalf("expected %d selected meals, got %d", len(candidates), len(selected))
+	}
+	for i, candidate := range selected {
+		if candidate.ExternalRecipeID != expectedPoolOrder[i].ExternalRecipeID {
+			t.Fatalf("expected backend pool order at %d to stay %q, got %q", i, expectedPoolOrder[i].ExternalRecipeID, candidate.ExternalRecipeID)
+		}
+		if candidate.FinalScore != expectedPoolOrder[i].FinalScore {
+			t.Fatalf("expected score to stay unchanged for %s", candidate.ExternalRecipeID)
+		}
+		if aiExplanationFromProvenance(candidate.SourceProvenance) == "" {
+			t.Fatalf("expected stored AI explanation for %s", candidate.ExternalRecipeID)
+		}
 	}
 }
 
-func TestGetRecommendationsGracefullyHandlesRecipeUpstreamFailure(t *testing.T) {
+func TestSelectDailyCandidatesReplacesAIRejectedMealsFromBackendSafePool(t *testing.T) {
+	now := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	candidates := make([]*models.RecommendationCandidate, 0, 21)
+	for i := 1; i <= 21; i++ {
+		candidates = append(candidates, dailyCandidate(fmt.Sprintf("meal-%02d", i), float64(60-i)))
+	}
+	seed := stableSeed("user-1", "profile-1", now.Format("2006-01-02"))
+	pool := deterministicWeightedPick(candidates, len(candidates), seed)
+	firstBatch := pool[:dailyRecommendationCount]
+	rejectedID := firstBatch[0].ExternalRecipeID
+	replacementID := pool[dailyRecommendationCount].ExternalRecipeID
+
+	firstItems := make([]string, 0, len(firstBatch))
+	for _, candidate := range firstBatch {
+		if candidate.ExternalRecipeID == rejectedID {
+			firstItems = append(firstItems, `{"mealId":"`+candidate.ExternalRecipeID+`","recommended":false,"rejectionReason":"Risque detecte par double validation.","explanation":""}`)
+			continue
+		}
+		firstItems = append(firstItems, `{"mealId":"`+candidate.ExternalRecipeID+`","recommended":true,"rejectionReason":"","explanation":"Explication valide en francais."}`)
+	}
+	secondItems := `{"mealId":"` + replacementID + `","recommended":true,"rejectionReason":"","explanation":"Remplacement valide en francais."}`
+	service := &RecommendationService{AI: &fakeAITextGenerator{texts: []string{
+		`[` + strings.Join(firstItems, ",") + `]`,
+		`[` + secondItems + `]`,
+	}}}
+
+	selected, result, mode := service.selectDailyCandidatesAndExplain(context.Background(), "user-1", "profile-1", candidates, now)
+
+	if mode != "backend_random_ai_validated" || !result.Applied || !result.ValidationApplied {
+		t.Fatalf("expected full double validation, got mode=%s result=%+v", mode, result)
+	}
+	if result.RejectedMealCount != 1 || result.ReplacementCount != 1 {
+		t.Fatalf("expected one rejection and one replacement, got %+v", result)
+	}
+	if len(selected) != dailyRecommendationCount {
+		t.Fatalf("expected %d selected meals, got %d", dailyRecommendationCount, len(selected))
+	}
+	if containsCandidateID(selected, rejectedID) {
+		t.Fatalf("AI-rejected meal %s must not remain selected", rejectedID)
+	}
+	if !containsCandidateID(selected, replacementID) {
+		t.Fatalf("expected backend-safe replacement %s in final set", replacementID)
+	}
+}
+
+func TestSelectDailyCandidatesRejectsInvalidAIIDsAndFallsBack(t *testing.T) {
+	now := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	candidates := []*models.RecommendationCandidate{
+		dailyCandidate("meal-1", 50),
+		dailyCandidate("meal-2", 40),
+		dailyCandidate("meal-3", 30),
+	}
+	service := &RecommendationService{AI: &fakeAITextGenerator{
+		text: `[{"mealId":"meal-1","recommended":true,"rejectionReason":"","explanation":"OK."},{"mealId":"meal-2","recommended":true,"rejectionReason":"","explanation":"OK."},{"mealId":"unsafe-new-meal","recommended":true,"rejectionReason":"","explanation":"Try to inject."}]`,
+	}}
+
+	selected, result, mode := service.selectDailyCandidatesAndExplain(context.Background(), "user-1", "profile-1", candidates, now)
+
+	if mode != "backend_random_ai_unavailable" || result.IgnoredReason == "" || result.Applied {
+		t.Fatalf("expected backend fallback on invalid AI id, got mode=%s result=%+v", mode, result)
+	}
+	if len(selected) != len(candidates) {
+		t.Fatalf("expected fallback to keep safe target count, got %d", len(selected))
+	}
+	for _, candidate := range selected {
+		if candidate.ExternalRecipeID == "unsafe-new-meal" {
+			t.Fatalf("invalid AI meal id must never be selected")
+		}
+		if candidate.FinalScore == 0 || aiExplanationFromProvenance(candidate.SourceProvenance) != "" {
+			t.Fatalf("expected deterministic fallback without local explanation or score mutation for %+v", candidate)
+		}
+	}
+}
+
+func TestGetRecommendationsUsesLocalCatalogWithoutExternalProvider(t *testing.T) {
 	userRepo := &fakeUserRepository{user: &models.User{ID: "user-1", FullName: "User"}}
 	profileRepo := &fakeProfileRepository{
 		profile:     &models.Profile{ID: "profile-1", UserID: "user-1", Age: 25},
-		lifestyle:   &models.Lifestyle{UserID: "user-1", Goal: "weight_loss", ActivityLevel: "light", MaxReadyTime: 30},
-		preferences: &models.Preferences{UserID: "user-1", MealsPerDay: 3},
+		lifestyle:   &models.Lifestyle{UserID: "user-1", Goal: "weight_loss", ActivityLevel: "light"},
+		preferences: &models.Preferences{UserID: "user-1"},
 		constraints: &models.Constraints{UserID: "user-1"},
 		nutritionProfile: &models.NutritionProfile{
 			ID:                 "nutrition-1",
@@ -607,42 +708,38 @@ func TestGetRecommendationsGracefullyHandlesRecipeUpstreamFailure(t *testing.T) 
 		},
 	}
 	traceRepo := &memoryTraceRepositoryForService{}
-	searcher := &fakeRecipeSearcher{err: spoonacular.ErrUpstreamFailure}
 	service := &RecommendationService{
 		Profiles:     &ProfileService{Users: userRepo, Profiles: profileRepo},
-		Recipes:      searcher,
+		LocalRecipes: &fakeLocalRecipeRepositoryForService{},
 		MedicalRules: &fakeMedicalRuleRepository{},
 		Traces:       traceRepo,
 	}
 
 	response, err := service.GetRecommendations(context.Background(), "user-1", "profile-1", "req-1")
 	if err != nil {
-		t.Fatalf("expected graceful no-match response on upstream failure, got %v", err)
+		t.Fatalf("expected recommendations from local catalog, got %v", err)
 	}
 	if len(response.Meals) == 0 {
-		t.Fatalf("expected local safety fallback meals when upstream is unavailable")
+		t.Fatalf("expected local catalog meals")
 	}
-	if response.Meals[0].Source != "local_safety_fallback" {
-		t.Fatalf("expected local safety fallback source, got %q", response.Meals[0].Source)
+	if response.Meals[0].Source != "local_catalog" {
+		t.Fatalf("expected local catalog source, got %q", response.Meals[0].Source)
 	}
 	if traceRepo.run == nil || traceRepo.run.Status != "completed" {
 		t.Fatalf("expected persisted completed run, got %+v", traceRepo.run)
 	}
-	if traceRepo.run.ExternalTrace == nil || traceRepo.run.ExternalTrace["profile_query"] == nil {
-		t.Fatalf("expected external trace to capture upstream failure")
-	}
-	if traceRepo.run.ExternalTrace["local_safety_fallback"] == nil {
-		t.Fatalf("expected external trace to capture local safety fallback")
+	if traceRepo.run.ExternalTrace == nil || traceRepo.run.ExternalTrace["local_catalog_primary"] == nil {
+		t.Fatalf("expected trace to capture local catalog source")
 	}
 }
 
-func TestGetRecommendationsUsesFallbackWhenPrimaryCandidatesAreRejected(t *testing.T) {
+func TestGetRecommendationsFiltersUnsafeLocalCandidates(t *testing.T) {
 	userRepo := &fakeUserRepository{user: &models.User{ID: "user-1", FullName: "User"}}
 	profileRepo := &fakeProfileRepository{
 		profile:     &models.Profile{ID: "profile-1", UserID: "user-1", Age: 25},
-		lifestyle:   &models.Lifestyle{UserID: "user-1", Goal: "weight_loss", ActivityLevel: "light", MaxReadyTime: 30},
-		preferences: &models.Preferences{UserID: "user-1", Likes: models.StringSlice{"chicken"}, MealsPerDay: 3},
-		constraints: &models.Constraints{UserID: "user-1"},
+		lifestyle:   &models.Lifestyle{UserID: "user-1", Goal: "weight_loss", ActivityLevel: "light"},
+		preferences: &models.Preferences{UserID: "user-1", Likes: models.StringSlice{"chicken"}},
+		constraints: &models.Constraints{UserID: "user-1", ExcludedIngredients: models.StringSlice{"mushroom"}},
 		nutritionProfile: &models.NutritionProfile{
 			ID:                 "nutrition-1",
 			UserID:             "user-1",
@@ -657,50 +754,13 @@ func TestGetRecommendationsUsesFallbackWhenPrimaryCandidatesAreRejected(t *testi
 		},
 	}
 	traceRepo := &memoryTraceRepositoryForService{}
-	searcher := &fakeRecipeSearcher{
-		responses: []*spoonacular.SearchResponse{
-			{
-				Results: []spoonacular.Recipe{
-					{
-						ID:      1,
-						Title:   "Oversized Chicken Bowl",
-						Summary: "Too large for the requested profile.",
-						Nutrition: spoonacular.Nutrition{Nutrients: []spoonacular.Nutrient{
-							{Name: "Calories", Amount: 980},
-							{Name: "Protein", Amount: 40},
-							{Name: "Carbohydrates", Amount: 60},
-							{Name: "Fat", Amount: 20},
-							{Name: "Sugar", Amount: 8},
-							{Name: "Sodium", Amount: 500},
-						}},
-						ExtendedIngredients: []spoonacular.Ingredient{{Name: "chicken"}},
-					},
-				},
-			},
-			{},
-			{
-				Results: []spoonacular.Recipe{
-					{
-						ID:      2,
-						Title:   "Lean Chicken Salad",
-						Summary: "Lean chicken with greens.",
-						Nutrition: spoonacular.Nutrition{Nutrients: []spoonacular.Nutrient{
-							{Name: "Calories", Amount: 420},
-							{Name: "Protein", Amount: 34},
-							{Name: "Carbohydrates", Amount: 28},
-							{Name: "Fat", Amount: 12},
-							{Name: "Sugar", Amount: 7},
-							{Name: "Sodium", Amount: 360},
-						}},
-						ExtendedIngredients: []spoonacular.Ingredient{{Name: "chicken"}, {Name: "lettuce"}},
-					},
-				},
-			},
-		},
-	}
+	localRecipes := &fakeLocalRecipeRepositoryForService{candidates: []repository.LocalRecipeCandidate{
+		{ID: "1", Title: "Mushroom Chicken Bowl", Ingredients: []string{"chicken", "mushroom"}, Calories: 420, Protein: 34, Carbs: 28, Fat: 12, Sugar: 7, SodiumMg: 360, Score: 60},
+		{ID: "2", Title: "Lean Chicken Salad", Ingredients: []string{"chicken", "lettuce"}, Calories: 420, Protein: 34, Carbs: 28, Fat: 12, Sugar: 7, SodiumMg: 360, Score: 50},
+	}}
 	service := &RecommendationService{
 		Profiles:     &ProfileService{Users: userRepo, Profiles: profileRepo},
-		Recipes:      searcher,
+		LocalRecipes: localRecipes,
 		MedicalRules: &fakeMedicalRuleRepository{},
 		Traces:       traceRepo,
 	}
@@ -710,106 +770,37 @@ func TestGetRecommendationsUsesFallbackWhenPrimaryCandidatesAreRejected(t *testi
 		t.Fatalf("expected recommendations with fallback, got %v", err)
 	}
 	if len(response.Meals) != 1 || response.Meals[0].ID != "2" {
-		t.Fatalf("expected accepted fallback meal, got %+v", response.Meals)
+		t.Fatalf("expected accepted safe local meal, got %+v", response.Meals)
 	}
-	if len(searcher.opts) != 3 {
-		t.Fatalf("expected two primary searches plus one fallback search, got %d", len(searcher.opts))
-	}
-	if searcher.opts[2].MaxCalories != 0 || searcher.opts[2].MinProtein != 0 {
-		t.Fatalf("expected fallback provider search to relax nutrient bounds, got %+v", searcher.opts[2])
-	}
-	if traceRepo.run == nil || traceRepo.run.SourceSummary["fallbackApplied"] != true {
-		t.Fatalf("expected trace to record fallback application, got %+v", traceRepo.run)
+	if traceRepo.run == nil || traceRepo.run.DecisionSummary["totalCandidates"] != 2 {
+		t.Fatalf("expected trace to record all local candidates, got %+v", traceRepo.run)
 	}
 }
 
-func TestApplyAIAdviceSanitizesExplanationWithoutChangingScore(t *testing.T) {
-	ai := &fakeAITextGenerator{
-		text: `[{"id":"meal-2","verdict":"pass","explanation":"  Strong macro fit.\n\nKeeps protein high while staying balanced and quick for the user across the whole week without introducing any unsafe reasoning or extra meals that were not approved.  "}]`,
-	}
-	service := &RecommendationService{AI: ai}
-	candidates := []*models.RecommendationCandidate{
-		{
-			ExternalRecipeID: "meal-2",
-			Title:            "Quinoa Salad",
-			Accepted:         true,
-			FinalScore:       40,
-			Explanation:      "Selected because passes deterministic profile validation",
-			SourceProvenance: models.JSONMap{},
-		},
-	}
+func TestSelectDailyCandidatesIgnoresForbiddenAIControlFields(t *testing.T) {
+	now := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	candidates := []*models.RecommendationCandidate{dailyCandidate("meal-2", 40)}
+	service := &RecommendationService{AI: &fakeAITextGenerator{
+		text: `[{"mealId":"meal-2","recommended":true,"rejectionReason":"","score":99,"explanation":"Try to change score."}]`,
+	}}
 
-	service.applyAIAdvice(context.Background(), &models.Lifestyle{
-		Goal:          "energy_maintenance",
-		ActivityLevel: "moderate",
-	}, &models.Preferences{}, candidates)
+	selected, result, mode := service.selectDailyCandidatesAndExplain(context.Background(), "user-1", "profile-1", candidates, now)
 
-	if candidates[0].FinalScore != 40 {
-		t.Fatalf("expected AI advice not to change deterministic score, got %v", candidates[0].FinalScore)
+	if mode != "backend_random_ai_unavailable" || !strings.Contains(result.IgnoredReason, "ai_output_forbidden_field_score") {
+		t.Fatalf("expected forbidden AI control field to trigger fallback, got mode=%s result=%+v", mode, result)
 	}
-	if strings.Contains(candidates[0].Explanation, "\n") {
-		t.Fatalf("expected AI explanation to be sanitized onto one line")
+	if len(selected) != 1 || selected[0].FinalScore != 40 {
+		t.Fatalf("expected forbidden AI output not to change score, got %+v", selected)
 	}
 }
 
-func TestParseAIAdviceResponseAcceptsMarkdownFencedJSON(t *testing.T) {
-	items, err := parseAIAdviceResponse("```json\n[{\"id\":\"meal-1\",\"verdict\":\"pass\",\"explanation\":\"Good fit.\"}]\n```")
+func TestParseAIExplanationResponseAcceptsMarkdownFencedJSON(t *testing.T) {
+	items, err := parseAIExplanationResponse("```json\n[{\"mealId\":\"meal-1\",\"recommended\":true,\"rejectionReason\":\"\",\"explanation\":\"Good fit.\"}]\n```")
 	if err != nil {
 		t.Fatalf("expected fenced JSON to parse, got %v", err)
 	}
-	if len(items) != 1 || items[0].ID != "meal-1" {
+	if len(items) != 1 || items[0].MealID != "meal-1" {
 		t.Fatalf("expected parsed advice item, got %+v", items)
-	}
-}
-
-func TestBuildExternalSearchTraceSanitizesSearchDetails(t *testing.T) {
-	trace := buildExternalSearchTrace(spoonacular.SearchOptions{
-		Query:              "healthy chicken quinoa",
-		IncludeIngredients: []string{"chicken", "quinoa"},
-		ExcludeIngredients: []string{"bacon"},
-		Intolerances:       []string{"dairy"},
-		MaxCalories:        650,
-	}, &spoonacular.SearchResponse{
-		Results:  []spoonacular.Recipe{{ID: 1}},
-		CacheHit: true,
-	}, nil, 120*time.Millisecond)
-
-	if trace["provider"] != "spoonacular" {
-		t.Fatalf("expected spoonacular provider trace")
-	}
-	if trace["queryPresent"] != true {
-		t.Fatalf("expected query presence flag")
-	}
-	if trace["includeCount"] != 2 || trace["excludeCount"] != 1 || trace["intoleranceCount"] != 1 {
-		t.Fatalf("expected only counts to be stored in trace, got %+v", trace)
-	}
-	if _, exists := trace["query"]; exists {
-		t.Fatalf("expected raw query not to be stored in trace")
-	}
-	if _, exists := trace["include"]; exists {
-		t.Fatalf("expected raw include list not to be stored in trace")
-	}
-	if trace["cacheHit"] != true {
-		t.Fatalf("expected cache hit to be recorded")
-	}
-}
-
-func TestEnrichRecipesFromSearchPlanCarriesPlanAndCacheMetadata(t *testing.T) {
-	items := enrichRecipesFromSearchPlan("strict_profile", &spoonacular.SearchResponse{
-		CacheHit: true,
-		Results: []spoonacular.Recipe{
-			{ID: 1, Title: "Chicken Bowl"},
-		},
-	})
-
-	if len(items) != 1 {
-		t.Fatalf("expected one enriched recipe, got %d", len(items))
-	}
-	if len(items[0].sourcePlans) != 1 || items[0].sourcePlans[0] != "strict_profile" {
-		t.Fatalf("expected source plan provenance, got %+v", items[0].sourcePlans)
-	}
-	if len(items[0].cacheSources) != 1 {
-		t.Fatalf("expected cache provenance to be carried when response is cached")
 	}
 }
 
@@ -824,23 +815,23 @@ func TestEvaluateCandidateCarriesEnrichmentProvenance(t *testing.T) {
 		&models.Preferences{Likes: models.StringSlice{"chicken"}},
 		&models.Constraints{},
 		&models.NutritionProfile{
-			MaxMealCalories:       900,
-			MinProteinPerMeal:     10,
-			MaxCarbsPerMeal:       100,
-			MaxFatPerMeal:         50,
-			MaxSugarPerMeal:       30,
-			MaxSodiumMgPerMeal:    1200,
-			RecommendedMealStyles: models.StringSlice{"healthy"},
+			MaxMealCalories:           900,
+			MinProteinPerMeal:         10,
+			MaxCarbsPerMeal:           100,
+			MaxFatPerMeal:             50,
+			MaxSugarPerMeal:           30,
+			MaxSodiumMgPerMeal:        1200,
+			DerivedRecommendationTags: models.StringSlice{"healthy"},
 		},
 		nil,
 		&SimilaritySignals{},
 		enrichedRecipe{
-			recipe: spoonacular.Recipe{
+			recipe: catalog.Recipe{
 				ID:      44,
 				Title:   "Chicken Bowl",
 				Summary: "Grilled chicken and quinoa.",
-				Nutrition: spoonacular.Nutrition{
-					Nutrients: []spoonacular.Nutrient{
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
 						{Name: "Calories", Amount: 520},
 						{Name: "Protein", Amount: 36},
 						{Name: "Carbohydrates", Amount: 32},
@@ -849,7 +840,7 @@ func TestEvaluateCandidateCarriesEnrichmentProvenance(t *testing.T) {
 						{Name: "Sodium", Amount: 300},
 					},
 				},
-				ExtendedIngredients: []spoonacular.Ingredient{{Name: "chicken"}, {Name: "quinoa"}},
+				ExtendedIngredients: []catalog.Ingredient{{Name: "chicken"}, {Name: "quinoa"}},
 			},
 			sourcePlans:  []string{"strict_profile", "goal_balanced"},
 			cacheSources: []string{"persistent_or_memory_cache"},
@@ -867,7 +858,7 @@ func TestEvaluateCandidateCarriesEnrichmentProvenance(t *testing.T) {
 
 func TestEvaluateHardFiltersSeparatesHardRejects(t *testing.T) {
 	result := evaluateHardFilters(
-		&models.Preferences{MealStyles: models.StringSlice{"healthy"}},
+		&models.Preferences{},
 		&models.Constraints{
 			Allergies:           models.StringSlice{"dairy"},
 			ExcludedIngredients: models.StringSlice{"bacon"},
@@ -894,6 +885,7 @@ func TestEvaluateHardFiltersSeparatesHardRejects(t *testing.T) {
 			sugar:       6,
 			sodium:      400,
 		},
+		true,
 	)
 
 	if len(result.rejectedReasons) < 2 {
@@ -904,13 +896,144 @@ func TestEvaluateHardFiltersSeparatesHardRejects(t *testing.T) {
 	}
 }
 
+func TestEvaluateHardFiltersRejectsBlockedAllergenInTitle(t *testing.T) {
+	result := evaluateHardFilters(
+		&models.Preferences{},
+		&models.Constraints{Allergies: models.StringSlice{"egg"}},
+		&models.NutritionProfile{
+			MaxMealCalories:    900,
+			MinProteinPerMeal:  0,
+			MaxCarbsPerMeal:    120,
+			MaxFatPerMeal:      80,
+			MaxSugarPerMeal:    30,
+			MaxSodiumMgPerMeal: 1000,
+		},
+		nil,
+		candidateFacts{
+			title:       "Egg Lecithin",
+			ingredients: []string{"natural emulsifier"},
+			calories:    120,
+			protein:     20,
+			carbs:       5,
+			fat:         2,
+			sugar:       1,
+			sodium:      30,
+		},
+		true,
+	)
+
+	if !containsString(result.rejectedReasons, "contains blocked ingredients") {
+		t.Fatalf("expected egg in title to be treated as a hard allergen hit, got %v", result.rejectedReasons)
+	}
+	if result.filterDecisions["blockedIngredients"] == nil {
+		t.Fatalf("expected title-based allergen hit to be recorded in filter decisions")
+	}
+}
+
+func TestEvaluateHardFiltersRejectsEggAllergyHiddenInLysozyme(t *testing.T) {
+	result := evaluateHardFilters(
+		&models.Preferences{},
+		&models.Constraints{Allergies: models.StringSlice{"egg"}},
+		&models.NutritionProfile{
+			MaxMealCalories:    900,
+			MinProteinPerMeal:  0,
+			MaxCarbsPerMeal:    120,
+			MaxFatPerMeal:      80,
+			MaxSugarPerMeal:    30,
+			MaxSodiumMgPerMeal: 1000,
+		},
+		nil,
+		candidateFacts{
+			title:       "Cheeses With Lysozymes",
+			ingredients: []string{"milk", "lysozymes"},
+			calories:    260,
+			protein:     20,
+			carbs:       5,
+			fat:         15,
+			sugar:       1,
+			sodium:      250,
+		},
+		true,
+	)
+
+	if !containsString(result.rejectedReasons, "contains blocked ingredients") {
+		t.Fatalf("expected lysozyme to be treated as an egg-allergy hard hit, got %v", result.rejectedReasons)
+	}
+}
+
+func TestEvaluateHardFiltersTreatsProteinFloorAsSoftTarget(t *testing.T) {
+	result := evaluateHardFilters(
+		&models.Preferences{},
+		&models.Constraints{},
+		&models.NutritionProfile{
+			MaxMealCalories:    900,
+			MinProteinPerMeal:  45,
+			MaxCarbsPerMeal:    120,
+			MaxFatPerMeal:      80,
+			MaxSugarPerMeal:    30,
+			MaxSodiumMgPerMeal: 1000,
+		},
+		nil,
+		candidateFacts{
+			title:       "Vegetable Couscous",
+			ingredients: []string{"couscous", "carrot"},
+			calories:    420,
+			protein:     12,
+			carbs:       70,
+			fat:         8,
+			sugar:       5,
+			sodium:      200,
+		},
+		true,
+	)
+
+	if len(result.rejectedReasons) != 0 {
+		t.Fatalf("expected protein floor to remain a soft scoring target, got hard rejections %v", result.rejectedReasons)
+	}
+	if result.filterDecisions["proteinFloorSoftTargetMissed"] != true {
+		t.Fatalf("expected protein floor miss to be recorded as a soft target")
+	}
+}
+
+func TestEvaluateHardFiltersIgnoresRemovedMealTypeDecoration(t *testing.T) {
+	result := evaluateHardFilters(
+		&models.Preferences{},
+		&models.Constraints{},
+		&models.NutritionProfile{
+			MaxMealCalories:    900,
+			MinProteinPerMeal:  0,
+			MaxCarbsPerMeal:    120,
+			MaxFatPerMeal:      80,
+			MaxSugarPerMeal:    80,
+			MaxSodiumMgPerMeal: 1000,
+		},
+		nil,
+		candidateFacts{
+			title:       "Hazelnut Spread",
+			ingredients: []string{"sugar", "hazelnuts", "cocoa"},
+			baseTags:    []string{"sugary", "sweetened"},
+			calories:    620,
+			protein:     12,
+			carbs:       60,
+			fat:         20,
+			sugar:       42,
+			sodium:      50,
+		},
+		true,
+	)
+
+	if containsString(result.rejectedReasons, "outside requested meal types") {
+		t.Fatalf("meal types are no longer product constraints and must not reject recipes, got %v", result.rejectedReasons)
+	}
+}
+
 func TestComputeDeterministicScoreRunsOnlyAfterHardFilterPass(t *testing.T) {
 	profile := &models.NutritionProfile{
-		MaxMealCalories:       700,
-		MinProteinPerMeal:     20,
-		MaxCarbsPerMeal:       60,
-		MaxFatPerMeal:         20,
-		RecommendedMealStyles: models.StringSlice{"healthy", "balanced"},
+		MaxMealCalories:           700,
+		MinProteinPerMeal:         20,
+		MaxCarbsPerMeal:           60,
+		MaxFatPerMeal:             20,
+		DerivedRecommendationTags: models.StringSlice{"healthy", "balanced"},
 	}
 	preferences := &models.Preferences{Likes: models.StringSlice{"chicken"}}
 	signals := &SimilaritySignals{Likes: []string{"quinoa"}}
@@ -937,13 +1060,70 @@ func TestComputeDeterministicScoreRunsOnlyAfterHardFilterPass(t *testing.T) {
 	}
 }
 
-func TestStripHTMLRemovesSpoonacularLinks(t *testing.T) {
-	input := `<a href="https://spoonacular.com/recipes/slow-cooker-lamb-curry-1583131">Slow cooker lamb curry</a>, <b>rich</b> &amp; balanced.`
+func TestRecommendationResponseHidesStaleAIExplanationsWhenAIWasNotApplied(t *testing.T) {
+	now := time.Now().UTC()
+	set := &models.DailyRecommendationSet{
+		ID:         "set-1",
+		RunID:      "run-1",
+		ValidFrom:  now.Add(-time.Hour),
+		ValidUntil: now.Add(time.Hour),
+		DecisionSummary: models.JSONMap{
+			"aiExplanationApplied": false,
+			"aiSkippedReason":      "ai_key_missing",
+		},
+	}
+	meals := []*models.DailyRecommendationMeal{
+		{
+			RecipeID:      "meal-1",
+			Title:         "Safe meal",
+			AIExplanation: "Selected because this stale text came from an old fallback.",
+		},
+	}
+
+	response := recommendationResponseFromDailySet(set, meals, "profile-1", now, nil)
+	if response.AIExplanationApplied {
+		t.Fatalf("expected AI to be marked unavailable")
+	}
+	if got := response.Meals[0].AIExplanation; got != "" {
+		t.Fatalf("expected stale AI explanation to be hidden, got %q", got)
+	}
+
+	set.DecisionSummary["aiExplanationApplied"] = true
+	response = recommendationResponseFromDailySet(set, meals, "profile-1", now, nil)
+	if got := response.Meals[0].AIExplanation; got == "" {
+		t.Fatalf("expected validated AI explanation to be exposed when applied")
+	}
+}
+
+func TestStripHTMLRemovesRecipeProviderLinks(t *testing.T) {
+	input := `<a href="https://catalog.com/recipes/slow-cooker-lamb-curry-1583131">Slow cooker lamb curry</a>, <b>rich</b> &amp; balanced.`
 	got := stripHTML(input)
 	want := "Slow cooker lamb curry, rich & balanced."
 	if got != want {
 		t.Fatalf("expected cleaned summary %q, got %q", want, got)
 	}
+}
+
+func dailyCandidate(id string, score float64) *models.RecommendationCandidate {
+	return &models.RecommendationCandidate{
+		ExternalRecipeID: id,
+		Title:            "Recette " + id,
+		Accepted:         true,
+		FinalScore:       score,
+		Explanation:      "",
+		Ingredients:      models.StringSlice{"chicken", "quinoa"},
+		Tags:             models.StringSlice{"balanced"},
+		SourceProvenance: models.JSONMap{},
+	}
+}
+
+func containsCandidateID(candidates []*models.RecommendationCandidate, recipeID string) bool {
+	for _, candidate := range candidates {
+		if candidate != nil && candidate.ExternalRecipeID == recipeID {
+			return true
+		}
+	}
+	return false
 }
 
 func containsString(values []string, target string) bool {

@@ -3,17 +3,12 @@ package models
 import "time"
 
 type Preferences struct {
-	ID                string      `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
-	UserID            string      `gorm:"type:uuid;uniqueIndex;not null"`
-	Likes             StringSlice `gorm:"-"`
-	Dislikes          StringSlice `gorm:"-"`
-	MealStyles        StringSlice `gorm:"-"`
-	MealTypes         StringSlice `gorm:"-"`
-	PreferredCuisines StringSlice `gorm:"-"`
-	ExcludedCuisines  StringSlice `gorm:"-"`
-	MealsPerDay       int         `gorm:"not null"`
-	CreatedAt         time.Time   `gorm:"not null;default:now()"`
-	UpdatedAt         time.Time   `gorm:"not null;default:now()"`
+	ID        string      `gorm:"type:uuid;default:gen_random_uuid();primaryKey"`
+	UserID    string      `gorm:"type:uuid;uniqueIndex;not null"`
+	Likes     StringSlice `gorm:"-"`
+	Dislikes  StringSlice `gorm:"-"`
+	CreatedAt time.Time   `gorm:"not null;default:now()"`
+	UpdatedAt time.Time   `gorm:"not null;default:now()"`
 }
 
 func (Preferences) TableName() string {

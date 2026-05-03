@@ -42,7 +42,7 @@ func (s *AccessPolicyService) Decide(subject AccessSubject, action string, resou
 	case "health_profile", "nutrition_profile":
 		return allowActions(action, "read", "write")
 	case "recommendation":
-		return allowActions(action, "generate", "read")
+		return allowActions(action, "generate", "read", "choose")
 	case "health_trace":
 		return allowActions(action, "read", "explain")
 	case "identity_session":

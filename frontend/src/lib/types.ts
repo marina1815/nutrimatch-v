@@ -20,19 +20,7 @@ export type LifestyleType =
   | "mixed"
   | "other";
 
-export type Intolerance =
-  | "dairy"
-  | "egg"
-  | "gluten"
-  | "grain"
-  | "peanut"
-  | "seafood"
-  | "sesame"
-  | "shellfish"
-  | "soy"
-  | "sulfite"
-  | "tree_nut"
-  | "wheat";
+export type Intolerance = string;
 
 export type Condition =
   | "diabetes"
@@ -40,49 +28,15 @@ export type Condition =
   | "cardiac"
   | "renal_failure"
   | "hypercholesterolemia"
-  | "digestive_sensitivity"
-  | "other";
-
-export type MealStyle =
-  | "traditional"
-  | "healthy"
-  | "middle eastern"
-  | "modern"
-  | "cold"
-  | "quick"
-  | "balanced"
-  | "high-protein"
-  | "low-sodium"
-  | "low-sugar";
-
-export type MealType =
-  | "main_course"
-  | "side_dish"
-  | "breakfast"
-  | "lunch"
-  | "dinner"
-  | "snack"
-  | "salad"
-  | "soup"
-  | "dessert"
-  | "appetizer"
-  | "beverage";
-
-export type Cuisine =
-  | "african"
-  | "american"
-  | "asian"
-  | "mediterranean"
-  | "middle_eastern"
-  | "european"
-  | "mexican";
+  | "digestive_sensitivity";
 
 export type ChronicDisease =
   | "diabetes"
   | "hypertension"
   | "cardiac"
   | "renal_failure"
-  | "other";
+  | "hypercholesterolemia"
+  | "digestive_sensitivity";
 
 export interface PersonalInfo {
   fullName: string;
@@ -90,25 +44,17 @@ export interface PersonalInfo {
   sex: Sex | "";
   weight: number | "";
   height: number | "";
-  profession: string;
-  city: string;
 }
 
 export interface LifestyleInfo {
   activityLevel: ActivityLevel | "";
   lifestyleType: LifestyleType | "";
   goal: Goal | "";
-  maxReadyTime: number | "";
 }
 
 export interface PreferencesInfo {
   likes: string[];
   dislikes: string[];
-  mealStyles: MealStyle[];
-  mealTypes: MealType[];
-  preferredCuisines: Cuisine[];
-  excludedCuisines: Cuisine[];
-  mealsPerDay: number | "";
 }
 
 export interface ConstraintsInfo {
@@ -143,10 +89,50 @@ export interface MealRecommendation {
   sodiumMg?: number;
   tags: string[];
   description: string;
-  ingredients: string[];
+  ingredients: CatalogOption[];
   matchReason: string;
   source?: string;
   score?: number;
+  nutritionConfidence?: "estimated" | "reported" | string;
+  nutritionSource?: string;
+  safetyWarnings?: string[];
+  aiExplanation?: string;
+}
+
+export interface RecommendationResponse {
+  runId: string;
+  profileId: string;
+  meals: MealRecommendation[];
+  activeChoice?: MealChoiceResponse;
+  generatedAt: string;
+  validUntil: string;
+  nextRefreshAt: string;
+  secondsUntilRefresh: number;
+  selectionMode: string;
+  aiExplanationApplied: boolean;
+  aiValidationApplied: boolean;
+  aiRejectedMealCount: number;
+  aiReplacementCount: number;
+  aiSkippedReason?: string;
+  aiOutputIgnoredReason?: string;
+}
+
+export interface MealSubstitution {
+  from: string;
+  to: string;
+  reason: string;
+}
+
+export interface MealChoiceResponse {
+  profileId: string;
+  meal: MealRecommendation;
+  preparationGuide: string;
+  substitutions: MealSubstitution[];
+  aiApplied: boolean;
+  aiSkippedReason?: string;
+  aiOutputIgnoredReason?: string;
+  chosenAt: string;
+  excludedUntil: string;
 }
 
 export interface HealthMetrics {
@@ -179,7 +165,6 @@ export interface NutritionProfile {
   maxSodiumMgPerMeal: number;
   derivedRestrictions: string[];
   derivedExcluded: string[];
-  recommendedMealStyles: string[];
   metadata: Record<string, unknown>;
 }
 
@@ -193,11 +178,38 @@ export interface CurrentSession {
   profileId: string;
 }
 
+export interface AuthSession {
+  id: string;
+  authMethod: string;
+  expiresAt: string;
+  idleExpiresAt: string;
+  createdAt: string;
+  lastSeenAt: string;
+  revoked: boolean;
+  current: boolean;
+}
+
+export interface CatalogOption {
+  value: string;
+  label: string;
+  source?: string;
+}
+
+export interface ProfileTaxonomy {
+  allergies: CatalogOption[];
+  conditions: CatalogOption[];
+  chronicDiseases: CatalogOption[];
+}
+
 export interface RecommendationExplanation {
   runId: string;
   profileId: string;
   mealId: string;
   explanation: string;
+  aiExplanation?: string;
+  aiExplanationApplied?: boolean;
+  aiSkippedReason?: string;
+  aiOutputIgnoredReason?: string;
   acceptedReasons: string[];
   rejectedReasons: string[];
   scoreBreakdown: Record<string, unknown>;

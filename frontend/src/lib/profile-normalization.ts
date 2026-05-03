@@ -2,15 +2,10 @@ import { UserProfile } from "@/lib/types";
 
 const LIMITS = {
   fullName: 120,
-  profession: 120,
-  city: 120,
   medications: 250,
   itemLength: 50,
   likes: 25,
   dislikes: 25,
-  mealStyles: 20,
-  mealTypes: 6,
-  cuisines: 8,
   allergies: 20,
   conditions: 20,
   excludedIngredients: 30,
@@ -56,8 +51,6 @@ export function sanitizeProfile(profile: UserProfile): UserProfile {
     personal: {
       ...profile.personal,
       fullName: normalizeText(profile.personal.fullName, LIMITS.fullName),
-      profession: normalizeText(profile.personal.profession, LIMITS.profession),
-      city: normalizeText(profile.personal.city, LIMITS.city),
     },
     lifestyle: {
       ...profile.lifestyle,
@@ -66,10 +59,6 @@ export function sanitizeProfile(profile: UserProfile): UserProfile {
       ...profile.preferences,
       likes: uniqueList(profile.preferences.likes, LIMITS.likes, LIMITS.itemLength),
       dislikes: uniqueList(profile.preferences.dislikes, LIMITS.dislikes, LIMITS.itemLength),
-      mealStyles: profile.preferences.mealStyles.slice(0, LIMITS.mealStyles),
-      mealTypes: profile.preferences.mealTypes.slice(0, LIMITS.mealTypes),
-      preferredCuisines: profile.preferences.preferredCuisines.slice(0, LIMITS.cuisines),
-      excludedCuisines: profile.preferences.excludedCuisines.slice(0, LIMITS.cuisines),
     },
     constraints: {
       ...profile.constraints,

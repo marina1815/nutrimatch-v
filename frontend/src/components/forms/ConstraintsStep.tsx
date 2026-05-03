@@ -1,10 +1,9 @@
 import { Checkbox } from "@/components/ui/Checkbox";
 import { IngredientAutocompleteInput } from "@/components/forms/IngredientAutocompleteInput";
-import {
-  COMMON_ALLERGIES,
-  COMMON_CONDITIONS,
-} from "@/lib/constants";
-import { ChronicDisease, Condition, Intolerance, UserProfile } from "@/lib/types";
+import { COMMON_ALLERGIES, COMMON_CONDITIONS } from "@/lib/constants";
+import { labelAllergyValue, labelConditions } from "@/lib/display-labels";
+import { ChronicDisease, Condition, Intolerance, ProfileTaxonomy, UserProfile } from "@/lib/types";
+import { useId } from "react";
 
 type Props = {
   data: UserProfile;
@@ -16,10 +15,40 @@ type Props = {
     chronicDiseases?: string;
     medications?: string;
   };
+  taxonomy?: ProfileTaxonomy | null;
 };
 
-export function ConstraintsStep({ data, setData, errors }: Props) {
-  const chronicConditionKeys = new Set<Condition>(["diabetes", "hypertension", "cardiac", "renal_failure"]);
+export function ConstraintsStep({ data, setData, errors, taxonomy }: Props) {
+  const medicationsId = useId();
+  const chronicConditionKeys = new Set<Condition>([
+    "diabetes",
+    "hypertension",
+    "cardiac",
+    "renal_failure",
+    "hypercholesterolemia",
+    "digestive_sensitivity",
+  ]);
+  const rawAllergyOptions = taxonomy?.allergies?.length ? taxonomy.allergies : COMMON_ALLERGIES;
+  const conditionOptions = taxonomy?.conditions?.length ? taxonomy.conditions : COMMON_CONDITIONS;
+
+  const allergyLabel = (value: string, fallback: string) => {
+    const label = labelAllergyValue(value, fallback);
+    return label === "-" ? "" : label;
+  };
+  const visibleAllergyOptions = rawAllergyOptions.reduce<typeof rawAllergyOptions>((items, item) => {
+    const label = allergyLabel(item.value, item.label);
+    if (!label) {
+      return items;
+    }
+    const duplicate = items.some((existing) =>
+      allergyLabel(existing.value, existing.label).toLowerCase() === label.toLowerCase(),
+    );
+    return duplicate ? items : [...items, item];
+  }, []);
+  const conditionLabel = (value: string, fallback: string) => {
+    const label = labelConditions([value]);
+    return label === "-" ? fallback : label;
+  };
 
   const toggleArrayValue = (
     section: "allergies" | "conditions",
@@ -69,12 +98,15 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
   return (
     <div className="nm-stack">
       <div className="nm-field">
-        <label className="nm-label">Allergies</label>
+        <label className="nm-label">Sensibilités alimentaires</label>
+        <span className="nm-help">
+          Allergies et intolérances réellement présentes dans le catalogue. Chaque choix bloque les recettes concernées.
+        </span>
         <div className="nm-check-grid">
-          {COMMON_ALLERGIES.map((item) => (
+          {visibleAllergyOptions.map((item) => (
             <Checkbox
               key={item.value}
-              label={item.label}
+              label={allergyLabel(item.value, item.label)}
               checked={data.constraints.allergies.includes(item.value)}
               onChange={() => toggleArrayValue("allergies", item.value)}
             />
@@ -84,16 +116,16 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
       </div>
 
       <div className="nm-field">
-        <label className="nm-label">Contraintes de sante</label>
+        <label className="nm-label">Maladies et contraintes santé</label>
         <span className="nm-help">
-          Un seul choix ici suffit: les maladies chroniques sont derivees automatiquement pour les regles medicales.
+          Ces choix sont des contraintes fortes: une recette incompatible est rejetée avant toute sélection.
         </span>
         <div className="nm-check-grid">
-          {COMMON_CONDITIONS.map((item) => (
+          {conditionOptions.map((item) => (
             <Checkbox
               key={item.value}
-              label={item.label}
-              checked={data.constraints.conditions.includes(item.value)}
+              label={conditionLabel(item.value, item.label)}
+              checked={data.constraints.conditions.includes(item.value as Condition)}
               onChange={() => toggleCondition(item.value)}
             />
           ))}
@@ -102,8 +134,8 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
       </div>
 
       <IngredientAutocompleteInput
-        label="Ingredients a exclure strictement"
-        placeholder="Cherche: pork, shrimp, sugar..."
+        label="Ingrédients à exclure strictement"
+        placeholder="Cherche: porc, crevette, sucre..."
         values={data.constraints.excludedIngredients}
         onChange={(nextValues) =>
           setData((prev) => ({
@@ -116,11 +148,11 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
         }
         error={errors?.excludedIngredients}
         maxItems={30}
-        helperText="Contrainte forte envoyee au moteur: selectionne des ingredients reconnus pour eviter les fautes et synonymes ambigus."
+        helperText="Contrainte forte: seuls les ingrédients reconnus par le catalogue sont envoyés au moteur."
       />
 
       <div className="nm-field">
-        <label className="nm-label">Prends-tu des medicaments ?</label>
+        <label className="nm-label">Prends-tu des médicaments ?</label>
         <div className="nm-inline-actions">
           <button
             type="button"
@@ -156,8 +188,9 @@ export function ConstraintsStep({ data, setData, errors }: Props) {
 
       {data.constraints.takesMedication && (
         <div className="nm-field">
-          <label className="nm-label">Lesquels ?</label>
+          <label className="nm-label" htmlFor={medicationsId}>Lesquels ?</label>
           <input
+            id={medicationsId}
             className={`nm-input ${errors?.medications ? "nm-input-error" : ""}`}
             maxLength={250}
             placeholder="Ex: metformine, antihypertenseur..."

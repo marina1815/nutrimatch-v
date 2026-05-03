@@ -23,7 +23,6 @@ type Config struct {
 	RateLimitBucketRetentionHours    int
 	SessionRetentionDays             int
 	RecommendationTraceRetentionDays int
-	CacheRetentionHours              int
 
 	JWTSecret          string
 	JWTIssuer          string
@@ -62,19 +61,9 @@ type Config struct {
 	RedisURL        string
 	RateLimitStore  string
 
-	NutritionAPIBaseURL string
-	NutritionAPIKey     string
-	AIAPIBaseURL        string
-	AIAPIKey            string
-
-	SpoonacularBaseURL         string
-	SpoonacularAPIKey          string
-	SpoonacularSearchCacheTTL  time.Duration
-	SpoonacularCircuitFailures int
-	SpoonacularCircuitCooldown time.Duration
-	GoogleAIBaseURL            string
-	GoogleAIAPIKey             string
-	GoogleAIModel              string
+	GoogleAIBaseURL string
+	GoogleAIAPIKey  string
+	GoogleAIModel   string
 
 	OIDCIssuerURL          string
 	OIDCClientID           string
@@ -102,7 +91,6 @@ func Load() *Config {
 		RateLimitBucketRetentionHours:    getEnvInt("RATE_LIMIT_BUCKET_RETENTION_HOURS", 24),
 		SessionRetentionDays:             getEnvInt("SESSION_RETENTION_DAYS", 30),
 		RecommendationTraceRetentionDays: getEnvInt("RECOMMENDATION_TRACE_RETENTION_DAYS", 90),
-		CacheRetentionHours:              getEnvInt("CACHE_RETENTION_HOURS", 24),
 
 		JWTSecret:          getEnv("JWT_SECRET", ""),
 		JWTIssuer:          getEnv("JWT_ISSUER", "nutrimatch"),
@@ -126,7 +114,7 @@ func Load() *Config {
 		CookieNameRefresh: getEnv("COOKIE_NAME_REFRESH", "nm_refresh"),
 		CookieNameCSRF:    getEnv("COOKIE_NAME_CSRF", "nm_csrf"),
 		CookieNameOIDC:    getEnv("COOKIE_NAME_OIDC", "nm_oidc"),
-		CookiePathRefresh: getEnv("COOKIE_PATH_REFRESH", "/api/v1/auth"),
+		CookiePathRefresh: getEnv("COOKIE_PATH_REFRESH", "/"),
 		CookiePathCSRF:    getEnv("COOKIE_PATH_CSRF", "/api/v1"),
 		CookieDomain:      getEnv("COOKIE_DOMAIN", ""),
 		CookieSecure:      getEnvBool("COOKIE_SECURE", false),
@@ -141,19 +129,9 @@ func Load() *Config {
 		RedisURL:        getEnv("REDIS_URL", ""),
 		RateLimitStore:  strings.ToLower(strings.TrimSpace(getEnv("RATE_LIMIT_STORE", "postgres"))),
 
-		NutritionAPIBaseURL: getEnv("NUTRITION_API_BASE_URL", ""),
-		NutritionAPIKey:     getEnv("NUTRITION_API_KEY", ""),
-		AIAPIBaseURL:        getEnv("AI_API_BASE_URL", ""),
-		AIAPIKey:            getEnv("AI_API_KEY", ""),
-
-		SpoonacularBaseURL:         getEnv("SPOONACULAR_BASE_URL", "https://api.spoonacular.com"),
-		SpoonacularAPIKey:          getEnv("SPOONACULAR_API_KEY", ""),
-		SpoonacularSearchCacheTTL:  time.Duration(getEnvInt("SPOONACULAR_SEARCH_CACHE_TTL_MINUTES", 15)) * time.Minute,
-		SpoonacularCircuitFailures: getEnvInt("SPOONACULAR_CIRCUIT_FAILURES", 3),
-		SpoonacularCircuitCooldown: time.Duration(getEnvInt("SPOONACULAR_CIRCUIT_COOLDOWN_SECONDS", 120)) * time.Second,
-		GoogleAIBaseURL:            getEnv("GOOGLE_AI_BASE_URL", "https://generativelanguage.googleapis.com"),
-		GoogleAIAPIKey:             getEnv("GOOGLE_AI_API_KEY", ""),
-		GoogleAIModel:              getEnv("GOOGLE_AI_MODEL", "gemini-2.5-flash"),
+		GoogleAIBaseURL: getEnv("GOOGLE_AI_BASE_URL", "https://generativelanguage.googleapis.com"),
+		GoogleAIAPIKey:  getEnv("GOOGLE_AI_API_KEY", ""),
+		GoogleAIModel:   getEnv("GOOGLE_AI_MODEL", "gemini-2.5-flash"),
 
 		OIDCIssuerURL:          getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:           getEnv("OIDC_CLIENT_ID", ""),
@@ -255,9 +233,6 @@ func (c *Config) Validate() error {
 	if c.RecommendationTraceRetentionDays < 7 || c.RecommendationTraceRetentionDays > 730 {
 		problems = append(problems, "RECOMMENDATION_TRACE_RETENTION_DAYS must be between 7 and 730")
 	}
-	if c.CacheRetentionHours < 1 || c.CacheRetentionHours > 168 {
-		problems = append(problems, "CACHE_RETENTION_HOURS must be between 1 and 168")
-	}
 	if c.CookieNameRefresh == "" {
 		problems = append(problems, "COOKIE_NAME_REFRESH is required")
 	}
@@ -324,18 +299,6 @@ func (c *Config) Validate() error {
 			problems = append(problems, "invalid WEBAUTHN_ORIGINS entry")
 		}
 	}
-	if err := validateExternalURL("SPOONACULAR_BASE_URL", c.SpoonacularBaseURL); err != nil {
-		problems = append(problems, err.Error())
-	}
-	if c.SpoonacularSearchCacheTTL < time.Minute || c.SpoonacularSearchCacheTTL > 24*time.Hour {
-		problems = append(problems, "SPOONACULAR_SEARCH_CACHE_TTL_MINUTES must be between 1 and 1440")
-	}
-	if c.SpoonacularCircuitFailures < 0 || c.SpoonacularCircuitFailures > 20 {
-		problems = append(problems, "SPOONACULAR_CIRCUIT_FAILURES must be between 0 and 20")
-	}
-	if c.SpoonacularCircuitFailures > 0 && (c.SpoonacularCircuitCooldown < 10*time.Second || c.SpoonacularCircuitCooldown > time.Hour) {
-		problems = append(problems, "SPOONACULAR_CIRCUIT_COOLDOWN_SECONDS must be between 10 and 3600 when the circuit breaker is enabled")
-	}
 	if c.GoogleAIAPIKey != "" || c.GoogleAIBaseURL != "" {
 		if err := validateExternalURL("GOOGLE_AI_BASE_URL", c.GoogleAIBaseURL); err != nil {
 			problems = append(problems, err.Error())
@@ -362,9 +325,6 @@ func (c *Config) Validate() error {
 	if strings.EqualFold(c.AppEnv, "production") {
 		if !c.CookieSecure {
 			problems = append(problems, "COOKIE_SECURE must be true in production")
-		}
-		if strings.TrimSpace(c.SpoonacularAPIKey) == "" {
-			problems = append(problems, "SPOONACULAR_API_KEY is required in production")
 		}
 		if isInsecureDatabaseURL(c.DBURL) {
 			problems = append(problems, "DATABASE_URL must enforce TLS in production")

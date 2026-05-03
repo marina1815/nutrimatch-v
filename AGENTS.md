@@ -23,7 +23,7 @@ NutriMatch est une application composée d'un backend Go (API REST, clean archit
     - `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`
     - `POST /profile`, `GET /profile`, `GET /recommendations/:profileId`
   - Architecture modulaire :
-    - `internal/clients/` (APIs externes : GoogleAI, Spoonacular)
+    - `internal/clients/` (APIs externes optionnelles : GoogleAI)
     - `internal/services/` (logique métier)
     - `internal/repository/gorm/` (accès DB via GORM)
     - `internal/http/handlers/` (handlers API)
@@ -52,7 +52,7 @@ NutriMatch est une application composée d'un backend Go (API REST, clean archit
 ---
 
 ## Intégrations & Sécurité
-- **APIs externes** : Spoonacular (recettes), Google AI Studio (affinage IA).
+- **APIs externes** : Google AI Studio optionnel pour explications/choix bornes dans un pool deja sur.
 - **Sécurité** :
   - Authentification JWT, refresh tokens hachés (Argon2id, pepper).
   - Rate limiting, CORS, headers de sécurité, validation stricte des entrées.

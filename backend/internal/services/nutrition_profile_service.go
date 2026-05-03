@@ -18,6 +18,8 @@ type NutritionProfileService struct {
 	TxManager    repository.TxManager
 }
 
+const defaultDailyMealDistribution = 3
+
 func (s *NutritionProfileService) Build(profile *models.Profile, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, rules []models.MedicalRule) *models.NutritionProfile {
 	heightMeters := profile.Height / 100.0
 	bmi := round2(profile.Weight / (heightMeters * heightMeters))
@@ -36,28 +38,23 @@ func (s *NutritionProfileService) Build(profile *models.Profile, lifestyle *mode
 	targetCarbs := round2((targetCalories * carbsRatio) / 4)
 	targetFat := round2((targetCalories * fatRatio) / 9)
 
-	mealsPerDay := preferences.MealsPerDay
-	if mealsPerDay <= 0 {
-		mealsPerDay = 3
-	}
-
-	maxMealCalories := round2(targetCalories / float64(mealsPerDay) * 1.10)
-	minProteinPerMeal := round2(targetProtein / float64(mealsPerDay) * 0.75)
-	maxCarbsPerMeal := round2(targetCarbs / float64(mealsPerDay) * 1.10)
-	maxFatPerMeal := round2(targetFat / float64(mealsPerDay) * 1.10)
+	maxMealCalories := round2(targetCalories / float64(defaultDailyMealDistribution) * 1.10)
+	minProteinPerMeal := round2(targetProtein / float64(defaultDailyMealDistribution) * 0.75)
+	maxCarbsPerMeal := round2(targetCarbs / float64(defaultDailyMealDistribution) * 1.10)
+	maxFatPerMeal := round2(targetFat / float64(defaultDailyMealDistribution) * 1.10)
 	maxSugarPerMeal := 20.0
 	maxSodiumMgPerMeal := 900.0
 
 	derivedRestrictions := mergeStringSlices(preferences.Dislikes, constraints.Allergies, constraints.ExcludedIngredients)
 	derivedExcluded := mergeStringSlices(constraints.Allergies, constraints.ExcludedIngredients)
-	recommendedMealStyles := mergeStringSlices(preferences.MealStyles, goalMealStyles(lifestyle.Goal))
+	derivedRecommendationTags := mergeStringSlices(goalRecommendationTags(lifestyle.Goal))
 
 	matchedRules := MatchMedicalRules(rules, constraints)
 	ruleCodes := make([]string, 0, len(matchedRules))
 	for _, rule := range matchedRules {
 		ruleCodes = append(ruleCodes, rule.Code)
 		derivedExcluded = mergeStringSlices(derivedExcluded, rule.BlockedIngredients)
-		recommendedMealStyles = mergeStringSlices(recommendedMealStyles, rule.RequiredTags)
+		derivedRecommendationTags = mergeStringSlices(derivedRecommendationTags, rule.RequiredTags)
 
 		maxMealCalories = minPositive(maxMealCalories, rule.MaxCalories)
 		minProteinPerMeal = maxPositive(minProteinPerMeal, rule.MinProteinGrams)
@@ -68,35 +65,35 @@ func (s *NutritionProfileService) Build(profile *models.Profile, lifestyle *mode
 	}
 
 	sort.Strings(ruleCodes)
-	sort.Strings(recommendedMealStyles)
+	sort.Strings(derivedRecommendationTags)
 	sort.Strings(derivedExcluded)
 	sort.Strings(derivedRestrictions)
 
 	return &models.NutritionProfile{
-		UserID:                profile.UserID,
-		ProfileID:             profile.ID,
-		BMI:                   bmi,
-		BMICategory:           bmiCategory(bmi),
-		BMR:                   bmr,
-		EstimatedCalories:     estimatedCalories,
-		TargetCalories:        targetCalories,
-		TargetProteinGrams:    targetProtein,
-		TargetCarbsGrams:      targetCarbs,
-		TargetFatGrams:        targetFat,
-		MaxMealCalories:       maxMealCalories,
-		MinProteinPerMeal:     minProteinPerMeal,
-		MaxCarbsPerMeal:       maxCarbsPerMeal,
-		MaxFatPerMeal:         maxFatPerMeal,
-		MaxSugarPerMeal:       maxSugarPerMeal,
-		MaxSodiumMgPerMeal:    maxSodiumMgPerMeal,
-		DerivedRestrictions:   models.StringSlice(derivedRestrictions),
-		DerivedExcluded:       models.StringSlice(derivedExcluded),
-		RecommendedMealStyles: models.StringSlice(recommendedMealStyles),
+		UserID:                    profile.UserID,
+		ProfileID:                 profile.ID,
+		BMI:                       bmi,
+		BMICategory:               bmiCategory(bmi),
+		BMR:                       bmr,
+		EstimatedCalories:         estimatedCalories,
+		TargetCalories:            targetCalories,
+		TargetProteinGrams:        targetProtein,
+		TargetCarbsGrams:          targetCarbs,
+		TargetFatGrams:            targetFat,
+		MaxMealCalories:           maxMealCalories,
+		MinProteinPerMeal:         minProteinPerMeal,
+		MaxCarbsPerMeal:           maxCarbsPerMeal,
+		MaxFatPerMeal:             maxFatPerMeal,
+		MaxSugarPerMeal:           maxSugarPerMeal,
+		MaxSodiumMgPerMeal:        maxSodiumMgPerMeal,
+		DerivedRestrictions:       models.StringSlice(derivedRestrictions),
+		DerivedExcluded:           models.StringSlice(derivedExcluded),
+		DerivedRecommendationTags: models.StringSlice(derivedRecommendationTags),
 		Metadata: models.JSONMap{
-			"matchedRuleCodes": ruleCodes,
-			"goal":             lifestyle.Goal,
-			"activityLevel":    lifestyle.ActivityLevel,
-			"mealsPerDay":      mealsPerDay,
+			"matchedRuleCodes":            ruleCodes,
+			"goal":                        lifestyle.Goal,
+			"activityLevel":               lifestyle.ActivityLevel,
+			"dailyMealDistributionFactor": defaultDailyMealDistribution,
 		},
 		CalculatedAt: time.Now(),
 	}
@@ -157,7 +154,7 @@ func macrosForGoal(goal string) (float64, float64, float64) {
 	}
 }
 
-func goalMealStyles(goal string) []string {
+func goalRecommendationTags(goal string) []string {
 	switch strings.ToLower(goal) {
 	case "weight_loss":
 		return []string{"healthy", "balanced"}

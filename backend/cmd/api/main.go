@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/marina1815/nutrimatch/internal/clients/googleai"
-	"github.com/marina1815/nutrimatch/internal/clients/spoonacular"
 	"github.com/marina1815/nutrimatch/internal/config"
 	"github.com/marina1815/nutrimatch/internal/database"
 	"github.com/marina1815/nutrimatch/internal/http/dto"
@@ -39,8 +38,8 @@ func main() {
 	sessionRepo := gormrepo.NewSessionRepository(db)
 	medicalRuleRepo := gormrepo.NewMedicalRuleRepository(db)
 	recommendationTraceRepo := gormrepo.NewRecommendationTraceRepository(db)
+	dailyRecommendationRepo := gormrepo.NewDailyRecommendationRepository(db)
 	vectorRepo := gormrepo.NewVectorRepository(db)
-	searchResponseCacheRepo := gormrepo.NewSearchResponseCacheRepository(db)
 	localRecipeRepo := gormrepo.NewLocalRecipeRepository(db)
 	auditRepo := gormrepo.NewAuditRepository(db)
 	authFailureRepo := gormrepo.NewAuthFailureRepository(db)
@@ -96,7 +95,6 @@ func main() {
 		log.Fatalf("webauthn initialization failed: %v", err)
 	}
 	recommendationCache := security.NewTTLCache[*dto.RecommendationResponse](3 * time.Minute)
-	searchCache := security.NewTTLCache[*spoonacular.SearchResponse](2 * time.Minute)
 	recommendationQuota := security.NewPersistentQuotaManager(rateLimitStore, rate.Every(2*time.Second), 3)
 	if seed, err := localdata.LoadCatalogSeed(); err != nil {
 		log.Printf("local recipe catalog seed load failed: %v", err)
@@ -129,7 +127,6 @@ func main() {
 			RateLimitBucketRetentionHours:    cfg.RateLimitBucketRetentionHours,
 			SessionRetentionDays:             cfg.SessionRetentionDays,
 			RecommendationTraceRetentionDays: cfg.RecommendationTraceRetentionDays,
-			CacheRetentionHours:              cfg.CacheRetentionHours,
 		},
 	}
 	if err := retentionService.Apply(context.Background()); err != nil {
@@ -160,23 +157,6 @@ func main() {
 	}
 	ingredientService := &services.IngredientService{Local: localRecipeRepo}
 
-	recipeClient := &spoonacular.Client{
-		BaseURL:       cfg.SpoonacularBaseURL,
-		APIKey:        cfg.SpoonacularAPIKey,
-		Limiter:       rate.NewLimiter(rate.Every(time.Second), 2),
-		MaxConcurrent: 2,
-	}
-	ingredientService.Client = recipeClient
-	recipeSearcher := &spoonacular.ResilientSearcher{
-		Base:                    recipeClient,
-		Cache:                   searchCache,
-		Persistent:              searchResponseCacheRepo,
-		PersistentTTL:           cfg.SpoonacularSearchCacheTTL,
-		MaxRetries:              1,
-		RetryDelay:              150 * time.Millisecond,
-		CircuitBreakerThreshold: cfg.SpoonacularCircuitFailures,
-		CircuitBreakerCooldown:  cfg.SpoonacularCircuitCooldown,
-	}
 	var aiClient services.AITextGenerator
 	if cfg.GoogleAIAPIKey != "" {
 		aiClient = &googleai.Client{
@@ -188,11 +168,11 @@ func main() {
 
 	recommendationService := &services.RecommendationService{
 		Profiles:     profileService,
-		Recipes:      recipeSearcher,
 		LocalRecipes: localRecipeRepo,
 		AI:           aiClient,
 		MedicalRules: medicalRuleRepo,
 		Traces:       recommendationTraceRepo,
+		Daily:        dailyRecommendationRepo,
 		Similarity:   similarityService,
 		Quota:        recommendationQuota,
 		Cache:        recommendationCache,

@@ -159,3 +159,107 @@ func (h *RecommendationHandler) Explain(c *gin.Context) {
 	})
 	respondOK(c, http.StatusOK, explanation)
 }
+
+func (h *RecommendationHandler) RefreshExplanations(c *gin.Context) {
+	userID := c.GetString("user_id")
+	profileID := c.Param("profileId")
+	if !allowAccess(c, h.Access, "explain", services.AccessResource{
+		OwnerUserID: userID,
+		Sensitivity: "health_trace",
+	}) {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    "recommendation.explain.refresh",
+			ResourceType: "health.recommendation_run",
+			ResourceID:   profileID,
+			Outcome:      "denied",
+		})
+		return
+	}
+
+	response, err := h.Service.RefreshDailyExplanations(c.Request.Context(), userID, profileID)
+	if err != nil {
+		if errors.Is(err, services.ErrProfileAccessDenied) || errors.Is(err, services.ErrRecommendationMealNotFound) {
+			respondError(c, http.StatusNotFound, "RECOMMENDATION_SET_NOT_FOUND", "recommendation set not found")
+			return
+		}
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    "recommendation.explain.refresh",
+			ResourceType: "health.recommendation_run",
+			ResourceID:   profileID,
+			Outcome:      "failed",
+		})
+		respondError(c, http.StatusInternalServerError, "RECOMMENDATION_EXPLANATION_REFRESH_FAILED", "recommendation explanation refresh failed")
+		return
+	}
+
+	recordAudit(c, h.Audit, services.AuditRecord{
+		UserID:       userID,
+		EventType:    "recommendation.explain.refresh",
+		ResourceType: "health.recommendation_run",
+		ResourceID:   response.RunID,
+		Details: map[string]any{
+			"profileId": profileID,
+			"aiApplied": response.AIExplanationApplied,
+		},
+	})
+	respondOK(c, http.StatusOK, response)
+}
+
+func (h *RecommendationHandler) Choose(c *gin.Context) {
+	userID := c.GetString("user_id")
+	profileID := c.Param("profileId")
+	mealID := c.Param("mealId")
+	if !allowAccess(c, h.Access, "choose", services.AccessResource{
+		OwnerUserID: userID,
+		Sensitivity: "recommendation",
+	}) {
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    "recommendation.choose",
+			ResourceType: "health.recommendation_candidate",
+			ResourceID:   mealID,
+			Outcome:      "denied",
+		})
+		return
+	}
+
+	response, err := h.Service.ChooseMeal(c.Request.Context(), userID, profileID, mealID, c.GetString("request_id"))
+	if err != nil {
+		if errors.Is(err, services.ErrProfileAccessDenied) || errors.Is(err, services.ErrRecommendationMealNotFound) {
+			recordAudit(c, h.Audit, services.AuditRecord{
+				UserID:       userID,
+				EventType:    "recommendation.choose",
+				ResourceType: "health.recommendation_candidate",
+				ResourceID:   mealID,
+				Outcome:      "denied",
+				Details:      map[string]any{"profileId": profileID},
+			})
+			respondError(c, http.StatusNotFound, "RECOMMENDATION_MEAL_NOT_FOUND", "recommendation meal not found")
+			return
+		}
+		recordAudit(c, h.Audit, services.AuditRecord{
+			UserID:       userID,
+			EventType:    "recommendation.choose",
+			ResourceType: "health.recommendation_candidate",
+			ResourceID:   mealID,
+			Outcome:      "failed",
+		})
+		respondError(c, http.StatusInternalServerError, "RECOMMENDATION_CHOICE_FAILED", "recommendation choice failed")
+		return
+	}
+
+	recordAudit(c, h.Audit, services.AuditRecord{
+		UserID:       userID,
+		EventType:    "recommendation.choose",
+		ResourceType: "health.recommendation_candidate",
+		ResourceID:   mealID,
+		Details: map[string]any{
+			"profileId":     profileID,
+			"excludedUntil": response.ExcludedUntil,
+			"aiApplied":     response.AIApplied,
+		},
+	})
+	respondOK(c, http.StatusOK, response)
+}

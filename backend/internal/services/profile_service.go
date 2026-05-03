@@ -25,24 +25,12 @@ func (s *ProfileService) Upsert(ctx context.Context, userID string, profile *mod
 	constraints.UserID = userID
 
 	if s.Cipher != nil {
-		profile.ProfessionIndex = s.index("health.profiles.profession", profile.Profession)
-		profile.CityIndex = s.index("health.profiles.city", profile.City)
 		constraints.MedicationsIndex = s.index("health.constraints.medications", constraints.Medications)
 
-		encryptedProfession, err := s.Cipher.EncryptScoped("health.profiles.profession", profile.Profession)
-		if err != nil {
-			return err
-		}
-		encryptedCity, err := s.Cipher.EncryptScoped("health.profiles.city", profile.City)
-		if err != nil {
-			return err
-		}
 		encrypted, err := s.Cipher.EncryptScoped("health.constraints.medications", constraints.Medications)
 		if err != nil {
 			return err
 		}
-		profile.Profession = encryptedProfession
-		profile.City = encryptedCity
 		constraints.Medications = encrypted
 	}
 
@@ -95,20 +83,10 @@ func (s *ProfileService) Get(ctx context.Context, userID string) (*models.Profil
 		return nil, nil, nil, nil, "", err
 	}
 	if s.Cipher != nil {
-		profession, decryptErr := s.Cipher.DecryptScoped("health.profiles.profession", profile.Profession)
-		if decryptErr != nil {
-			return nil, nil, nil, nil, "", decryptErr
-		}
-		city, decryptErr := s.Cipher.DecryptScoped("health.profiles.city", profile.City)
-		if decryptErr != nil {
-			return nil, nil, nil, nil, "", decryptErr
-		}
 		decrypted, decryptErr := s.Cipher.DecryptScoped("health.constraints.medications", constraints.Medications)
 		if decryptErr != nil {
 			return nil, nil, nil, nil, "", decryptErr
 		}
-		profile.Profession = profession
-		profile.City = city
 		constraints.Medications = decrypted
 	}
 	return profile, lifestyle, preferences, constraints, user.FullName, nil

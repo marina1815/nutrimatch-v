@@ -30,9 +30,9 @@ func TestCanonicalizeMealStyleFrenchAlias(t *testing.T) {
 	}
 }
 
-func TestSpoonacularIntoleranceTreeNut(t *testing.T) {
-	got, ok := SpoonacularIntolerance("noix")
-	if !ok || got != "tree nut" {
-		t.Fatalf("expected tree nut, got %q ok=%v", got, ok)
+func TestCanonicalizeIntoleranceTreeNut(t *testing.T) {
+	got, ok := CanonicalizeIntolerance("noix")
+	if !ok || got != "tree_nut" {
+		t.Fatalf("expected tree_nut, got %q ok=%v", got, ok)
 	}
 }

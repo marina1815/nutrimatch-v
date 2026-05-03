@@ -8,7 +8,6 @@ type Lifestyle struct {
 	ActivityLevel string    `gorm:"not null"`
 	LifestyleType string    `gorm:"not null"`
 	Goal          string    `gorm:"not null"`
-	MaxReadyTime  int       `gorm:"not null;default:45"`
 	CreatedAt     time.Time `gorm:"not null;default:now()"`
 	UpdatedAt     time.Time `gorm:"not null;default:now()"`
 }

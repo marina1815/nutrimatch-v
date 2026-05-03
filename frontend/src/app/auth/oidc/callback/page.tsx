@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getCurrentSession } from "@/lib/api";
-import { clearClientSession, setCurrentProfileId } from "@/lib/session";
+import { clearClientSession } from "@/lib/session";
 
 const SAFE_NEXT_PATHS = new Set(["/results", "/profile", "/onboarding"]);
 
@@ -30,9 +30,6 @@ function OIDCCallbackContent() {
       let target = nextPath;
       try {
         const session = await getCurrentSession();
-        if (session.profileId) {
-          setCurrentProfileId(session.profileId);
-        }
         if (!session.hasProfile && target === "/results") {
           target = "/onboarding";
         }

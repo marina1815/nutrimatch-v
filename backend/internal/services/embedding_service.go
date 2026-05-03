@@ -31,9 +31,6 @@ type profileEmbeddingPayload struct {
 	Goal            string   `json:"goal"`
 	Likes           []string `json:"likes"`
 	Dislikes        []string `json:"dislikes"`
-	MealStyles      []string `json:"mealStyles"`
-	MealTypes       []string `json:"mealTypes"`
-	Cuisines        []string `json:"cuisines"`
 	Allergies       []string `json:"allergies"`
 	Conditions      []string `json:"conditions"`
 	ChronicDiseases []string `json:"chronicDiseases"`
@@ -78,7 +75,7 @@ func (s *EmbeddingService) ScoreRecipe(ctx context.Context, recipeID string, pre
 	if s.Vectors != nil && recipeID != "" {
 		err := s.Vectors.UpsertRecipeEmbedding(ctx, &models.RecipeEmbedding{
 			ExternalRecipeID: recipeID,
-			Source:           "spoonacular",
+			Source:           "local_catalog",
 			EmbeddingVersion: RecipeEmbeddingVersion,
 			SourceHash:       recipeHash,
 			Embedding:        recipeLiteral,
@@ -100,9 +97,6 @@ func buildProfileEmbeddingPayload(profile *models.Profile, lifestyle *models.Lif
 		Goal:            taxonomy.NormalizeLooseToken(lifestyle.Goal),
 		Likes:           sortedNormalized([]string(preferences.Likes)),
 		Dislikes:        sortedNormalized([]string(preferences.Dislikes)),
-		MealStyles:      sortedNormalized([]string(preferences.MealStyles)),
-		MealTypes:       sortedNormalized([]string(preferences.MealTypes)),
-		Cuisines:        sortedNormalized(append([]string(preferences.PreferredCuisines), []string(preferences.ExcludedCuisines)...)),
 		Allergies:       sortedNormalized([]string(constraints.Allergies)),
 		Conditions:      sortedNormalized([]string(constraints.Conditions)),
 		ChronicDiseases: sortedNormalized([]string(constraints.ChronicDiseases)),
@@ -139,9 +133,6 @@ func vectorizePayload(payload profileEmbeddingPayload) (string, string) {
 	addTokens(weights, "goal:"+payload.Goal, 2.2)
 	addTokenList(weights, payload.Likes, "like", 1.6)
 	addTokenList(weights, payload.Dislikes, "dislike", -0.7)
-	addTokenList(weights, payload.MealStyles, "style", 1.4)
-	addTokenList(weights, payload.MealTypes, "meal_type", 1.2)
-	addTokenList(weights, payload.Cuisines, "cuisine", 0.9)
 	addTokenList(weights, payload.Allergies, "allergy", -2.0)
 	addTokenList(weights, payload.Conditions, "condition", -1.8)
 	addTokenList(weights, payload.ChronicDiseases, "chronic", -2.0)
@@ -177,17 +168,8 @@ func vectorizeIntent(preferences *models.Preferences, constraints *models.Constr
 	intent := map[string]any{}
 	if preferences != nil {
 		likes := sortedNormalized([]string(preferences.Likes))
-		styles := sortedNormalized([]string(preferences.MealStyles))
-		mealTypes := sortedNormalized([]string(preferences.MealTypes))
-		cuisines := sortedNormalized([]string(preferences.PreferredCuisines))
 		addTokenList(weights, likes, "ingredient", 2.0)
-		addTokenList(weights, styles, "tag", 1.4)
-		addTokenList(weights, mealTypes, "meal_type", 1.2)
-		addTokenList(weights, cuisines, "cuisine", 0.9)
 		intent["likes"] = likes
-		intent["styles"] = styles
-		intent["mealTypes"] = mealTypes
-		intent["cuisines"] = cuisines
 	}
 	if constraints != nil {
 		excluded := sortedNormalized(append(append([]string{}, constraints.Allergies...), constraints.ExcludedIngredients...))
@@ -195,10 +177,10 @@ func vectorizeIntent(preferences *models.Preferences, constraints *models.Constr
 		intent["excluded"] = excluded
 	}
 	if nutritionProfile != nil {
-		styles := sortedNormalized([]string(nutritionProfile.RecommendedMealStyles))
-		addTokenList(weights, styles, "tag", 1.6)
+		tags := sortedNormalized([]string(nutritionProfile.DerivedRecommendationTags))
+		addTokenList(weights, tags, "tag", 1.6)
 		addTokens(weights, calorieBucket(nutritionProfile.MaxMealCalories), 0.9)
-		intent["recommendedStyles"] = styles
+		intent["derivedRecommendationTags"] = tags
 		intent["maxMealCalories"] = nutritionProfile.MaxMealCalories
 	}
 	normalizeWeights(weights)

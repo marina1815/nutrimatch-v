@@ -1,43 +1,33 @@
 import { sanitizeDisplayText } from "@/lib/text-sanitization";
-import { MealRecommendation, RecommendationExplanation } from "@/lib/types";
+import { MealRecommendation } from "@/lib/types";
 
 type Props = {
   meal: MealRecommendation;
-  explanation?: RecommendationExplanation;
-  loadingExplanation?: boolean;
-  onExplain?: () => void;
+  aiExplanationApplied?: boolean;
+  choosing?: boolean;
+  onChoose?: () => void;
 };
 
-export function MealCard({ meal, explanation, loadingExplanation, onExplain }: Props) {
-  const description = sanitizeDisplayText(meal.description);
-  const matchReason = sanitizeDisplayText(meal.matchReason);
-  const explanationText = explanation ? sanitizeDisplayText(explanation.explanation) : "";
-  const ingredients = meal.ingredients.map(sanitizeDisplayText).filter(Boolean);
+export function MealCard({
+  meal,
+  aiExplanationApplied = false,
+  choosing = false,
+  onChoose,
+}: Props) {
+  const ingredients = meal.ingredients
+    .map((ingredient) => sanitizeDisplayText(ingredient.label || ingredient.value))
+    .filter(Boolean);
+  const explanation = aiExplanationApplied ? sanitizeDisplayText(meal.aiExplanation || "") : "";
 
   return (
     <div className="nm-card">
       <div className="nm-meal-top">
-        <h3>{meal.title}</h3>
-        <span className="nm-badge">{meal.calories} kcal</span>
-      </div>
-
-      <p className="nm-muted">{description}</p>
-
-      <div className="nm-macros">
-        <span>Protein: {meal.protein}g</span>
-        <span>Carbs: {meal.carbs}g</span>
-        <span>Fat: {meal.fat}g</span>
-      </div>
-
-      <div className="nm-tags">
-        {meal.tags.map((tag) => (
-          <span key={tag} className="nm-tag">{tag}</span>
-        ))}
+        <h3>{sanitizeDisplayText(meal.title)}</h3>
       </div>
 
       {ingredients.length > 0 && (
         <div className="nm-ingredients">
-          <strong>Ingredients</strong>
+          <strong>Ingr&eacute;dients</strong>
           <div className="nm-ingredient-list">
             {ingredients.map((ingredient) => (
               <span key={ingredient} className="nm-ingredient">{ingredient}</span>
@@ -46,30 +36,29 @@ export function MealCard({ meal, explanation, loadingExplanation, onExplain }: P
         </div>
       )}
 
-      <p className="nm-reason">{matchReason}</p>
+      <div className="nm-explain-box">
+        <strong>Explication IA</strong>
+        {explanation ? (
+          <p className="nm-reason">{explanation}</p>
+        ) : (
+          <p className="nm-muted">Aucune explication IA disponible pour cette recette.</p>
+        )}
+      </div>
 
-      {onExplain && (
+      {meal.nutritionConfidence === "estimated" && (
+        <p className="nm-muted">Nutrition estim&eacute;e depuis le catalogue local.</p>
+      )}
+
+      {onChoose && (
         <div className="nm-inline-actions">
           <button
             type="button"
-            className="nm-link-btn"
-            onClick={onExplain}
-            disabled={loadingExplanation}
+            className="nm-link-btn nm-link-btn-primary"
+            onClick={onChoose}
+            disabled={choosing}
           >
-            {loadingExplanation ? "Loading explanation..." : "View explanation"}
+            {choosing ? "Choix en cours..." : "Choisir cette recette"}
           </button>
-        </div>
-      )}
-
-      {explanation && (
-        <div className="nm-explain-box">
-          <p className="nm-reason">{explanationText}</p>
-          <p className="nm-muted">
-            Accepted: {explanation.acceptedReasons.join(", ") || "-"}
-          </p>
-          <p className="nm-muted">
-            Rejected: {explanation.rejectedReasons.join(", ") || "-"}
-          </p>
         </div>
       )}
     </div>

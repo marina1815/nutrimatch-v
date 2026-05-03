@@ -2,54 +2,85 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { RecommendationList } from "@/components/results/RecommendationList";
 import {
   ApiError,
+  chooseRecommendationMeal,
   getProfile,
-  getRecommendationExplanation,
   getRecommendations,
-  getRecommendationTrace,
+  refreshRecommendationExplanations,
 } from "@/lib/api";
-import { getCurrentProfileId, setCurrentProfileId } from "@/lib/session";
-import {
-  MealRecommendation,
-  RecommendationExplanation,
-  RecommendationTrace,
-} from "@/lib/types";
+import { clearClientSession } from "@/lib/session";
+import { MealChoiceResponse, MealRecommendation, RecommendationResponse } from "@/lib/types";
+import { sanitizeDisplayText } from "@/lib/text-sanitization";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
+import { isAIRetryableReason, labelAIReason, labelAIStatus, labelSelectionMode } from "@/lib/display-labels";
+
+const LOADER_STEPS = [
+  "Analyse du profil nutritionnel",
+  "Application des allergies, exclusions et maladies",
+  "Sélection de recettes sûres dans le catalogue local",
+  "Génération ou récupération des explications IA",
+];
+
+function secondsUntil(date?: string): number {
+  if (!date) {
+    return 0;
+  }
+  const ms = new Date(date).getTime() - Date.now();
+  return Math.max(0, Math.floor(ms / 1000));
+}
+
+function formatCountdown(totalSeconds: number): string {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
 
 export default function ResultsPage() {
+  const router = useRouter();
   const [profileId, setProfileId] = useState<string | null>(null);
+  const [response, setResponse] = useState<RecommendationResponse | null>(null);
   const [meals, setMeals] = useState<MealRecommendation[]>([]);
-  const [trace, setTrace] = useState<RecommendationTrace | null>(null);
-  const [explanationsByMealId, setExplanationsByMealId] = useState<Record<string, RecommendationExplanation>>({});
-  const [loadingExplanationMealId, setLoadingExplanationMealId] = useState<string | null>(null);
+  const [selectedChoice, setSelectedChoice] = useState<MealChoiceResponse | null>(null);
+  const [choosingMealId, setChoosingMealId] = useState<string | null>(null);
+  const [loaderStep, setLoaderStep] = useState(0);
+  const [countdown, setCountdown] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [refreshingExplanation, setRefreshingExplanation] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [explanationError, setExplanationError] = useState<string | null>(null);
   const [requiresAuth, setRequiresAuth] = useState(false);
+
+  useEffect(() => {
+    if (!loading) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setLoaderStep((current) => Math.min(current + 1, LOADER_STEPS.length - 1));
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [loading]);
 
   useEffect(() => {
     let cancelled = false;
 
     const loadRecommendations = async () => {
       try {
-        let nextProfileId = getCurrentProfileId();
+        const profile = await getProfile();
+        const nextProfileId = profile.profileId;
 
-        if (!nextProfileId) {
-          const profile = await getProfile();
-          nextProfileId = profile.profileId;
-          setCurrentProfileId(nextProfileId);
-        }
-
-        const [recommendationResponse, traceResponse] = await Promise.all([
-          getRecommendations(nextProfileId),
-          getRecommendationTrace(nextProfileId),
-        ]);
+        const recommendationResponse = await getRecommendations(nextProfileId);
 
         if (!cancelled) {
           setProfileId(nextProfileId);
-          setMeals(recommendationResponse.meals);
-          setTrace(traceResponse);
+          setResponse(recommendationResponse);
+          setSelectedChoice(recommendationResponse.activeChoice || null);
+          setMeals(recommendationResponse.activeChoice ? [] : recommendationResponse.meals);
+          setExplanationError(null);
+          setCountdown(secondsUntil(recommendationResponse.nextRefreshAt));
         }
       } catch (err) {
         if (cancelled) {
@@ -57,10 +88,12 @@ export default function ResultsPage() {
         }
 
         if (err instanceof ApiError && err.status === 401) {
+          clearClientSession();
           setRequiresAuth(true);
           setError("Connecte-toi pour consulter tes recommandations.");
+          router.replace("/login");
         } else if (err instanceof ApiError && err.status === 404) {
-          setError("Complete ton profil avant de consulter tes recommandations.");
+          setError("Complète ton profil avant de consulter tes recommandations.");
         } else {
           setError(getSafeErrorMessage(err, "recommendations.load"));
         }
@@ -76,26 +109,57 @@ export default function ResultsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [router]);
 
-  const handleExplain = async (mealId: string) => {
-    if (!profileId || explanationsByMealId[mealId] || loadingExplanationMealId === mealId) {
+  useEffect(() => {
+    if (!response?.nextRefreshAt) {
       return;
     }
+    const timer = window.setInterval(() => {
+      setCountdown(secondsUntil(response.nextRefreshAt));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [response?.nextRefreshAt]);
 
-    setLoadingExplanationMealId(mealId);
+  const handleChoose = async (mealId: string) => {
+    if (!profileId || choosingMealId) {
+      return;
+    }
+    setChoosingMealId(mealId);
     try {
-      const explanation = await getRecommendationExplanation(profileId, mealId);
-      setExplanationsByMealId((current) => ({
-        ...current,
-        [mealId]: explanation,
-      }));
+      const choice = await chooseRecommendationMeal(profileId, mealId);
+      setSelectedChoice(choice);
+      setMeals([]);
+      setResponse((current) => current ? { ...current, activeChoice: choice, meals: [] } : current);
     } catch (err) {
-      setError(getSafeErrorMessage(err, "recommendations.explain"));
+      setError(getSafeErrorMessage(err, "recommendations.choose"));
     } finally {
-      setLoadingExplanationMealId(null);
+      setChoosingMealId(null);
     }
   };
+
+  const handleRetryExplanation = async () => {
+    if (!profileId || refreshingExplanation) {
+      return;
+    }
+    setRefreshingExplanation(true);
+    setExplanationError(null);
+    try {
+      const refreshed = await refreshRecommendationExplanations(profileId);
+      setResponse(refreshed);
+      setSelectedChoice(refreshed.activeChoice || null);
+      setMeals(refreshed.activeChoice ? [] : refreshed.meals);
+      setCountdown(secondsUntil(refreshed.nextRefreshAt));
+    } catch (err) {
+      setExplanationError(getSafeErrorMessage(err, "recommendations.load"));
+    } finally {
+      setRefreshingExplanation(false);
+    }
+  };
+
+  const selectedSubstitutions = selectedChoice?.substitutions ?? [];
+  const aiReason = response?.aiSkippedReason || response?.aiOutputIgnoredReason || "";
+  const canRetryExplanation = isAIRetryableReason(aiReason);
 
   return (
     <main className="nm-page">
@@ -103,40 +167,76 @@ export default function ResultsPage() {
         <div className="nm-header-row">
           <div>
             <span className="nm-logo">NutriMatch</span>
-            <h1 className="nm-title">Your meal recommendations</h1>
+            <h1 className="nm-title">Tes recommandations du jour</h1>
             <p className="nm-sub">
-              Based on your profile, preferences, lifestyle and dietary constraints.
+              20 recettes sûres issues du catalogue local, renouvelées toutes les 24 heures.
             </p>
           </div>
         </div>
 
-        {trace && (
+        {response && (
           <div className="nm-card nm-aux-card">
-            <h2 className="nm-title nm-section-title-compact">Recommendation trace</h2>
+            <h2 className="nm-title nm-section-title-compact">Prochaine sélection</h2>
             <div className="nm-trace-grid">
               <div className="nm-keyval">
-                <span className="nm-muted">Status</span>
-                <strong>{trace.status}</strong>
+                <span className="nm-muted">Recettes affichées</span>
+                <strong>{selectedChoice ? 1 : meals.length}</strong>
               </div>
               <div className="nm-keyval">
-                <span className="nm-muted">Accepted</span>
-                <strong>{String(trace.decisionSummary.accepted ?? 0)}</strong>
+                <span className="nm-muted">Renouvellement</span>
+                <strong>{formatCountdown(countdown)}</strong>
               </div>
               <div className="nm-keyval">
-                <span className="nm-muted">Rejected</span>
-                <strong>{String(trace.decisionSummary.rejected ?? 0)}</strong>
+                <span className="nm-muted">Mode</span>
+                <strong>{labelSelectionMode(response.selectionMode)}</strong>
               </div>
               <div className="nm-keyval">
-                <span className="nm-muted">AI advice</span>
-                <strong>{String(trace.decisionSummary.aiApplied ?? false)}</strong>
+                <span className="nm-muted">IA</span>
+                <strong>{labelAIStatus(response)}</strong>
               </div>
             </div>
+            {response.aiSkippedReason && (
+              <p className="nm-muted">{sanitizeDisplayText(labelAIReason(response.aiSkippedReason))}</p>
+            )}
+            {response.aiOutputIgnoredReason && (
+              <p className="nm-muted">Sortie IA ignorée: {sanitizeDisplayText(labelAIReason(response.aiOutputIgnoredReason))}</p>
+            )}
+          </div>
+        )}
+
+        {selectedChoice && (
+          <div className="nm-card nm-aux-card">
+            <h2 className="nm-title nm-section-title-compact">
+              Recette choisie: {sanitizeDisplayText(selectedChoice.meal.title)}
+            </h2>
+            {selectedChoice.preparationGuide ? (
+              <p className="nm-reason">{sanitizeDisplayText(selectedChoice.preparationGuide)}</p>
+            ) : (
+              <p className="nm-muted">
+                {labelAIReason(selectedChoice.aiSkippedReason || selectedChoice.aiOutputIgnoredReason) || "Guide IA indisponible pour cette recette."}
+              </p>
+            )}
+            {selectedSubstitutions.length > 0 && (
+              <div className="nm-ingredients">
+                <strong>Substitutions compatibles</strong>
+                <div className="nm-stack">
+                  {selectedSubstitutions.map((substitution) => (
+                    <p className="nm-muted" key={`${substitution.from}-${substitution.to}`}>
+                      {sanitizeDisplayText(substitution.from)} vers {sanitizeDisplayText(substitution.to)}: {sanitizeDisplayText(substitution.reason)}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+            <p className="nm-muted">
+              Cette recette sera exclue des nouvelles suggestions jusqu&apos;au {new Date(selectedChoice.excludedUntil).toLocaleString("fr-FR")}.
+            </p>
           </div>
         )}
 
         {loading && (
           <div className="nm-card">
-            <p className="nm-sub">Loading recommendations...</p>
+            <p className="nm-sub">{LOADER_STEPS[loaderStep]}...</p>
           </div>
         )}
 
@@ -145,26 +245,29 @@ export default function ResultsPage() {
             <p className="nm-error">{error}</p>
             <div className="nm-inline-actions">
               {requiresAuth ? (
-                <Link href="/login" className="nm-link-btn nm-link-btn-primary">Sign in</Link>
+                <Link href="/login" className="nm-link-btn nm-link-btn-primary">Se connecter</Link>
               ) : (
-                <Link href="/onboarding" className="nm-link-btn nm-link-btn-primary">Complete profile</Link>
+                <Link href="/onboarding" className="nm-link-btn nm-link-btn-primary">Compléter le profil</Link>
               )}
             </div>
           </div>
         )}
 
-        {!loading && !error && meals.length === 0 && (
+        {!loading && !error && !selectedChoice && meals.length === 0 && (
           <div className="nm-card">
-            <p className="nm-sub">No safe recommendation is available for this profile right now.</p>
+            <p className="nm-sub">Aucune recette sûre n&apos;est disponible pour ce profil actuellement.</p>
           </div>
         )}
 
-        {!loading && !error && meals.length > 0 && (
+        {!loading && !error && !selectedChoice && meals.length > 0 && (
           <RecommendationList
             meals={meals}
-            explanationsByMealId={explanationsByMealId}
-            loadingExplanationMealId={loadingExplanationMealId}
-            onExplain={(mealId) => void handleExplain(mealId)}
+            aiExplanationApplied={response?.aiExplanationApplied === true}
+            choosingMealId={choosingMealId}
+            aiMessage={explanationError || (response && !response.aiExplanationApplied ? labelAIReason(aiReason) : "")}
+            refreshingExplanation={refreshingExplanation}
+            onChoose={(mealId) => void handleChoose(mealId)}
+            onRetryExplanation={canRetryExplanation ? () => void handleRetryExplanation() : undefined}
           />
         )}
       </section>

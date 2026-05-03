@@ -9,4 +9,7 @@ test/
 .idea/
 *.iml
 *.go.[0-9]*
+*.tmp
 *.tsbuildinfo
+.gocache/
+.modcache/

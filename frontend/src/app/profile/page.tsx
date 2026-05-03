@@ -1,29 +1,31 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { SecurityPanel } from "@/components/security/SecurityPanel";
+import { ApiError, getNutritionProfile, getProfile } from "@/lib/api";
+import { clearClientSession } from "@/lib/session";
 import {
-  ApiError,
-  changePassword,
-  getNutritionProfile,
-  getProfile,
-} from "@/lib/api";
+  labelActivity,
+  labelAllergies,
+  labelBmiCategory,
+  labelConditions,
+  labelGoal,
+  labelIngredients,
+  labelLifestyle,
+  labelSex,
+} from "@/lib/display-labels";
 import { NutritionProfile, UserProfileResponse } from "@/lib/types";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 export default function ProfilePage() {
+  const router = useRouter();
   const [profile, setProfile] = useState<UserProfileResponse | null>(null);
   const [nutrition, setNutrition] = useState<NutritionProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [errorStatus, setErrorStatus] = useState<number | null>(null);
-  const [securityMessage, setSecurityMessage] = useState<string | null>(null);
-  const [securityError, setSecurityError] = useState<string | null>(null);
-  const [passwords, setPasswords] = useState({
-    currentPassword: "",
-    newPassword: "",
-    confirmPassword: "",
-  });
 
   useEffect(() => {
     let cancelled = false;
@@ -45,11 +47,13 @@ export default function ProfilePage() {
         }
 
         if (err instanceof ApiError && err.status === 401) {
+          clearClientSession();
           setErrorStatus(401);
           setError("Connecte-toi pour consulter ton profil.");
+          router.replace("/login");
         } else if (err instanceof ApiError && err.status === 404) {
           setErrorStatus(404);
-          setError("Aucun profil enregistre pour le moment.");
+          setError("Aucun profil enregistré pour le moment.");
         } else {
           setErrorStatus(null);
           setError(getSafeErrorMessage(err, "profile.load"));
@@ -66,27 +70,14 @@ export default function ProfilePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const handlePasswordChange = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setSecurityError(null);
-    setSecurityMessage(null);
-    try {
-      await changePassword(passwords);
-      setPasswords({ currentPassword: "", newPassword: "", confirmPassword: "" });
-      setSecurityMessage("Password updated. Other sessions were revoked.");
-    } catch (err) {
-      setSecurityError(getSafeErrorMessage(err, "profile.security.password"));
-    }
-  };
+  }, [router]);
 
   if (loading) {
     return (
       <main className="nm-page">
         <div className="nm-card">
-          <h1 className="nm-title">Loading profile</h1>
-          <p className="nm-sub">Fetching your saved nutrition profile.</p>
+          <h1 className="nm-title">Chargement du profil</h1>
+          <p className="nm-sub">Récupération de ton profil nutritionnel sauvegardé.</p>
         </div>
       </main>
     );
@@ -96,16 +87,16 @@ export default function ProfilePage() {
     return (
       <main className="nm-page">
         <div className="nm-card">
-          <h1 className="nm-title">No profile found</h1>
-          <p className="nm-sub">{error || "Please complete onboarding first."}</p>
+          <h1 className="nm-title">Aucun profil trouvé</h1>
+          <p className="nm-sub">{error || "Complète d'abord ton onboarding."}</p>
           <div className="nm-inline-actions">
             {errorStatus !== 401 && (
               <Link href="/onboarding" className="nm-link-btn nm-link-btn-primary">
-                Start onboarding
+                Commencer l&apos;onboarding
               </Link>
             )}
             <Link href="/login" className="nm-link-btn">
-              Sign in
+              Se connecter
             </Link>
           </div>
         </div>
@@ -118,93 +109,48 @@ export default function ProfilePage() {
       <div className="nm-card">
         <span className="nm-logo">NutriMatch</span>
         <h1 className="nm-title">{profile.personal.fullName}</h1>
-        <p className="nm-sub">Your nutrition profile summary</p>
+        <p className="nm-sub">Résumé de ton profil nutritionnel</p>
 
         <div className="nm-stack">
-          <div><strong>Age:</strong> {profile.personal.age}</div>
-          <div><strong>Sex:</strong> {profile.personal.sex}</div>
-          <div><strong>Weight:</strong> {profile.personal.weight} kg</div>
-          <div><strong>Height:</strong> {profile.personal.height} cm</div>
-          <div><strong>Activity:</strong> {profile.lifestyle.activityLevel}</div>
-          <div><strong>Goal:</strong> {profile.lifestyle.goal}</div>
-          <div><strong>Max ready time:</strong> {profile.lifestyle.maxReadyTime} min</div>
-          <div><strong>Likes:</strong> {profile.preferences.likes.join(", ") || "-"}</div>
-          <div><strong>Dislikes:</strong> {profile.preferences.dislikes.join(", ") || "-"}</div>
-          <div><strong>Meal types:</strong> {profile.preferences.mealTypes.join(", ") || "-"}</div>
-          <div><strong>Preferred cuisines:</strong> {profile.preferences.preferredCuisines.join(", ") || "-"}</div>
-          <div><strong>Excluded cuisines:</strong> {profile.preferences.excludedCuisines.join(", ") || "-"}</div>
-          <div><strong>Allergies:</strong> {profile.constraints.allergies.join(", ") || "-"}</div>
-          <div><strong>Conditions:</strong> {profile.constraints.conditions.join(", ") || "-"}</div>
-          <div><strong>Excluded ingredients:</strong> {profile.constraints.excludedIngredients.join(", ") || "-"}</div>
+          <div><strong>Âge:</strong> {profile.personal.age}</div>
+          <div><strong>Sexe:</strong> {labelSex(profile.personal.sex)}</div>
+          <div><strong>Poids:</strong> {profile.personal.weight} kg</div>
+          <div><strong>Taille:</strong> {profile.personal.height} cm</div>
+          <div><strong>Activité:</strong> {labelActivity(profile.lifestyle.activityLevel)}</div>
+          <div><strong>Mode de vie:</strong> {labelLifestyle(profile.lifestyle.lifestyleType)}</div>
+          <div><strong>Objectif:</strong> {labelGoal(profile.lifestyle.goal)}</div>
+          <div><strong>Aliments aimés:</strong> {labelIngredients(profile.preferences.likes)}</div>
+          <div><strong>Aliments moins appréciés:</strong> {labelIngredients(profile.preferences.dislikes)}</div>
+          <div><strong>Sensibilités alimentaires:</strong> {labelAllergies(profile.constraints.allergies)}</div>
+          <div><strong>Maladies:</strong> {labelConditions(profile.constraints.conditions)}</div>
+          <div><strong>Ingrédients exclus:</strong> {labelIngredients(profile.constraints.excludedIngredients)}</div>
           {profile.constraints.takesMedication && profile.constraints.medicationsRedacted && (
             <div>
-              <strong>Medications:</strong> hidden in this summary for safety
+              <strong>Médicaments:</strong> masqués dans ce résumé pour protéger tes données
             </div>
           )}
           {nutrition && (
             <div className="nm-card">
-              <h2 className="nm-title nm-section-title">Health metrics</h2>
+              <h2 className="nm-title nm-section-title">Indicateurs nutritionnels</h2>
               <div className="nm-stack">
-                <div><strong>BMI:</strong> {nutrition.bmi}</div>
-                <div><strong>BMI category:</strong> {nutrition.bmiCategory}</div>
-                <div><strong>BMR:</strong> {nutrition.bmr} kcal/day</div>
-                <div><strong>Estimated calories:</strong> {nutrition.estimatedCalories} kcal/day</div>
-                <div><strong>Target calories:</strong> {nutrition.targetCalories} kcal/day</div>
-                <div><strong>Protein target:</strong> {nutrition.targetProteinGrams} g/day</div>
+                <div><strong>IMC:</strong> {nutrition.bmi}</div>
+                <div><strong>Catégorie IMC:</strong> {labelBmiCategory(nutrition.bmiCategory)}</div>
+                <div><strong>Métabolisme basal:</strong> {nutrition.bmr} kcal/jour</div>
+                <div><strong>Calories estimées:</strong> {nutrition.estimatedCalories} kcal/jour</div>
+                <div><strong>Objectif calorique:</strong> {nutrition.targetCalories} kcal/jour</div>
+                <div><strong>Objectif protéines:</strong> {nutrition.targetProteinGrams} g/jour</div>
               </div>
             </div>
           )}
-          <div className="nm-card">
-            <h2 className="nm-title nm-section-title">Security</h2>
-            <p className="nm-sub">
-              Password changes revoke other sessions.
-            </p>
-            {securityMessage && <p className="nm-sub">{securityMessage}</p>}
-            {securityError && <p className="nm-error">{securityError}</p>}
-
-            <form className="nm-stack" onSubmit={handlePasswordChange}>
-              <input
-                className="nm-input"
-                type="password"
-                autoComplete="current-password"
-                placeholder="Current password"
-                value={passwords.currentPassword}
-                onChange={(event) => setPasswords((value) => ({ ...value, currentPassword: event.target.value }))}
-                required
-              />
-              <input
-                className="nm-input"
-                type="password"
-                autoComplete="new-password"
-                placeholder="New password"
-                minLength={12}
-                value={passwords.newPassword}
-                onChange={(event) => setPasswords((value) => ({ ...value, newPassword: event.target.value }))}
-                required
-              />
-              <input
-                className="nm-input"
-                type="password"
-                autoComplete="new-password"
-                placeholder="Confirm new password"
-                minLength={12}
-                value={passwords.confirmPassword}
-                onChange={(event) => setPasswords((value) => ({ ...value, confirmPassword: event.target.value }))}
-                required
-              />
-              <button className="nm-link-btn nm-link-btn-primary" type="submit">
-                Update password
-              </button>
-            </form>
-          </div>
+          <SecurityPanel />
         </div>
 
         <div className="nm-inline-actions">
           <Link href="/onboarding" className="nm-link-btn">
-            Edit profile
+            Modifier le profil
           </Link>
           <Link href="/results" className="nm-link-btn nm-link-btn-primary">
-            See results
+            Voir les résultats
           </Link>
         </div>
       </div>

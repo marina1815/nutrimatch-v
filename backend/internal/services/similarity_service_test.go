@@ -42,7 +42,7 @@ type fakeSemanticExpander struct {
 	signals *SimilaritySignals
 }
 
-func (e *fakeSemanticExpander) Expand(_ context.Context, _ string, _, _ []string) (*SimilaritySignals, error) {
+func (e *fakeSemanticExpander) Expand(_ context.Context, _ string, _ []string) (*SimilaritySignals, error) {
 	return e.signals, nil
 }
 
@@ -56,14 +56,12 @@ func TestSimilarityServiceMergesDeterministicAndSemanticSignals(t *testing.T) {
 					ActivityLevel: "light",
 					Goal:          "weight_loss",
 					Likes:         []string{"quinoa"},
-					MealStyles:    []string{"healthy"},
 				},
 			},
 		},
 		Semantic: &fakeSemanticExpander{
 			signals: &SimilaritySignals{
 				Likes:        []string{"lentils"},
-				MealStyles:   []string{"modern"},
 				Sources:      []string{"semantic_vector_stub"},
 				SemanticUsed: true,
 			},
@@ -75,7 +73,7 @@ func TestSimilarityServiceMergesDeterministicAndSemanticSignals(t *testing.T) {
 		"user-1",
 		&models.Profile{Age: 25},
 		&models.Lifestyle{ActivityLevel: "light", Goal: "weight_loss"},
-		&models.Preferences{Likes: models.StringSlice{"chicken"}, MealStyles: models.StringSlice{"balanced"}},
+		&models.Preferences{Likes: models.StringSlice{"chicken"}},
 		&models.Constraints{},
 	)
 	if err != nil {
@@ -84,9 +82,6 @@ func TestSimilarityServiceMergesDeterministicAndSemanticSignals(t *testing.T) {
 
 	if len(signals.Likes) != 2 {
 		t.Fatalf("expected merged likes from deterministic and semantic stages, got %+v", signals.Likes)
-	}
-	if len(signals.MealStyles) != 2 {
-		t.Fatalf("expected merged meal styles, got %+v", signals.MealStyles)
 	}
 	if !signals.DeterministicUsed || !signals.SemanticUsed {
 		t.Fatalf("expected deterministic and semantic stages to both be marked as used: %+v", signals)

@@ -176,6 +176,9 @@ func (s *AuthService) ListSessions(ctx context.Context, userID, currentSessionID
 	}
 	out := make([]SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
+		if session.ID != currentSessionID {
+			continue
+		}
 		out = append(out, SessionSummary{
 			ID:            session.ID,
 			AuthMethod:    session.AuthMethod,
@@ -258,6 +261,9 @@ func (s *AuthService) createSession(ctx context.Context, sessions repository.Ses
 		IPHash:           security.HashFingerprint(ip),
 	}
 	if err := sessions.Create(ctx, session); err != nil {
+		return "", time.Time{}, "", time.Time{}, err
+	}
+	if err := sessions.RevokeOthers(ctx, userID, sessionID); err != nil {
 		return "", time.Time{}, "", time.Time{}, err
 	}
 

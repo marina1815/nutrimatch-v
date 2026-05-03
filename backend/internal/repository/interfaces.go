@@ -50,6 +50,18 @@ type RecommendationTraceRepository interface {
 	GetCandidateByRecipeID(ctx context.Context, userID, profileID, recipeID string) (*models.RecommendationCandidate, error)
 }
 
+type DailyRecommendationRepository interface {
+	GetActiveSet(ctx context.Context, userID, profileID string, now time.Time) (*models.DailyRecommendationSet, []*models.DailyRecommendationMeal, error)
+	GetPreviousShownRecipeIDs(ctx context.Context, userID, profileID string, now time.Time) ([]string, error)
+	GetSuppressedRecipeIDs(ctx context.Context, userID, profileID string, now time.Time) ([]string, error)
+	CreateSet(ctx context.Context, set *models.DailyRecommendationSet, meals []*models.DailyRecommendationMeal) error
+	ReplaceSetMeals(ctx context.Context, setID string, meals []*models.DailyRecommendationMeal, decisionSummary models.JSONMap, selectionMode, status string) error
+	UpdateSetExplanations(ctx context.Context, setID string, explanations map[string]string, decisionSummary models.JSONMap, selectionMode string) error
+	GetMealInActiveSet(ctx context.Context, userID, profileID, recipeID string, now time.Time) (*models.DailyRecommendationSet, *models.DailyRecommendationMeal, error)
+	GetChoiceForSet(ctx context.Context, setID, userID, profileID string) (*models.RecipeChoice, error)
+	CreateChoice(ctx context.Context, choice *models.RecipeChoice) error
+}
+
 type VectorRepository interface {
 	UpsertProfileEmbedding(ctx context.Context, embedding *models.ProfileEmbedding) error
 	UpsertRecipeEmbedding(ctx context.Context, embedding *models.RecipeEmbedding) error
@@ -89,7 +101,8 @@ type RateLimitBucketRepository interface {
 
 type LocalRecipeRepository interface {
 	Search(ctx context.Context, query LocalRecipeQuery) ([]LocalRecipeCandidate, error)
-	SuggestIngredients(ctx context.Context, query string, limit int) ([]string, error)
+	SuggestIngredients(ctx context.Context, query string, limit int) ([]CatalogOption, error)
+	ListAllergies(ctx context.Context) ([]CatalogOption, error)
 }
 
 type LocalRecipeQuery struct {
@@ -97,20 +110,30 @@ type LocalRecipeQuery struct {
 	Likes               []string
 	ExcludedIngredients []string
 	AllergyKeys         []string
+	ConditionKeys       []string
 	Limit               int
 }
 
 type LocalRecipeCandidate struct {
-	ID          string
-	Title       string
-	Ingredients []string
-	Calories    float64
-	Protein     float64
-	Carbs       float64
-	Fat         float64
-	Sugar       float64
-	SodiumMg    float64
-	Score       float64
+	ID                   string
+	Title                string
+	Ingredients          []string
+	Tags                 []string
+	Calories             float64
+	Protein              float64
+	Carbs                float64
+	Fat                  float64
+	Sugar                float64
+	SodiumMg             float64
+	Score                float64
+	MedicalCompatibility map[string]bool
+	MedicalRiskFlags     []string
+}
+
+type CatalogOption struct {
+	Value  string `json:"value"`
+	Label  string `json:"label"`
+	Source string `json:"source,omitempty"`
 }
 
 type RetentionRepository interface {
@@ -122,7 +145,6 @@ type RetentionPolicy struct {
 	RateLimitBucketRetentionHours    int
 	SessionRetentionDays             int
 	RecommendationTraceRetentionDays int
-	CacheRetentionHours              int
 }
 
 type ExternalIdentityRepository interface {
@@ -136,10 +158,6 @@ type ProfileBundle struct {
 	Age               int
 	ActivityLevel     string
 	Goal              string
-	MaxReadyTime      int
-	MealStyles        []string
-	MealTypes         []string
-	PreferredCuisines []string
 	Likes             []string
 	Conditions        []string
 	ChronicDiseases   []string
@@ -147,18 +165,19 @@ type ProfileBundle struct {
 }
 
 type Repositories struct {
-	Users              UserRepository
-	Profiles           ProfileRepository
-	Sessions           SessionRepository
-	MedicalRules       MedicalRuleRepository
-	RecommendationRuns RecommendationTraceRepository
-	Vectors            VectorRepository
-	MFA                MFARepository
-	Audit              AuditRepository
-	AuthFailures       AuthFailureRepository
-	RateLimitBuckets   RateLimitBucketRepository
-	ExternalIdentities ExternalIdentityRepository
-	LocalRecipes       LocalRecipeRepository
+	Users                UserRepository
+	Profiles             ProfileRepository
+	Sessions             SessionRepository
+	MedicalRules         MedicalRuleRepository
+	RecommendationRuns   RecommendationTraceRepository
+	DailyRecommendations DailyRecommendationRepository
+	Vectors              VectorRepository
+	MFA                  MFARepository
+	Audit                AuditRepository
+	AuthFailures         AuthFailureRepository
+	RateLimitBuckets     RateLimitBucketRepository
+	ExternalIdentities   ExternalIdentityRepository
+	LocalRecipes         LocalRecipeRepository
 }
 
 type TxManager interface {

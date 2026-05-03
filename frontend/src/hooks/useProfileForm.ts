@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, getProfile } from "@/lib/api";
-import { clearDraftProfile, getDraftProfile, setDraftProfile } from "@/lib/session";
 import { sanitizeProfile } from "@/lib/profile-normalization";
 import { UserProfile, UserProfileResponse } from "@/lib/types";
 import { ProfileErrors, validateStep } from "@/lib/validation";
@@ -14,23 +13,15 @@ const defaultProfile: UserProfile = {
     sex: "",
     weight: "",
     height: "",
-    profession: "",
-    city: "",
   },
   lifestyle: {
     activityLevel: "",
     lifestyleType: "",
     goal: "",
-    maxReadyTime: 45,
   },
   preferences: {
     likes: [],
     dislikes: [],
-    mealStyles: [],
-    mealTypes: [],
-    preferredCuisines: [],
-    excludedCuisines: [],
-    mealsPerDay: "",
   },
   constraints: {
     allergies: [],
@@ -58,11 +49,6 @@ function mergeWithDefaultProfile(saved: Partial<UserProfile>): UserProfile {
       ...saved.preferences,
       likes: saved.preferences?.likes ?? [],
       dislikes: saved.preferences?.dislikes ?? [],
-      mealStyles: saved.preferences?.mealStyles ?? [],
-      mealTypes: saved.preferences?.mealTypes ?? [],
-      preferredCuisines: saved.preferences?.preferredCuisines ?? [],
-      excludedCuisines: saved.preferences?.excludedCuisines ?? [],
-      mealsPerDay: saved.preferences?.mealsPerDay ?? "",
     },
     constraints: {
       ...defaultProfile.constraints,
@@ -97,18 +83,11 @@ function profileResponseToFormData(profile: UserProfileResponse): UserProfile {
 
 export function useProfileForm() {
   const [step, setStep] = useState(0);
-  const [data, setData] = useState<UserProfile>(() => {
-    const saved = getDraftProfile();
-    return saved ? mergeWithDefaultProfile(saved) : defaultProfile;
-  });
+  const [data, setData] = useState<UserProfile>(defaultProfile);
   const [errors, setErrors] = useState<ProfileErrors>({});
   const [loadingSavedProfile, setLoadingSavedProfile] = useState(true);
   const [loadSavedProfileError, setLoadSavedProfileError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState(false);
-
-  useEffect(() => {
-    setDraftProfile(data);
-  }, [data]);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,7 +105,6 @@ export function useProfileForm() {
         }
         if (error instanceof ApiError && error.status === 401) {
           setAuthRequired(true);
-          clearDraftProfile();
           return;
         }
         if (error instanceof ApiError && error.status === 404) {
@@ -168,7 +146,6 @@ export function useProfileForm() {
     setData(defaultProfile);
     setErrors({});
     setStep(0);
-    clearDraftProfile();
   };
 
   return {

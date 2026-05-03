@@ -4,18 +4,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ApiError, getCurrentSession, registerUser } from "@/lib/api";
-import { setCurrentProfileId } from "@/lib/session";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 interface FormState {
-  name: string;
   email: string;
   password: string;
   confirm: string;
 }
 
 interface FormErrors {
-  name?: string;
   email?: string;
   password?: string;
   confirm?: string;
@@ -24,7 +21,7 @@ interface FormErrors {
 
 export default function RegisterPage() {
   const router = useRouter();
-  const [form, setForm] = useState<FormState>({ name: "", email: "", password: "", confirm: "" });
+  const [form, setForm] = useState<FormState>({ email: "", password: "", confirm: "" });
   const [errors, setErrors] = useState<FormErrors>({});
   const [loading, setLoading] = useState(false);
 
@@ -35,10 +32,9 @@ export default function RegisterPage() {
 
   const validate = (): FormErrors => {
     const nextErrors: FormErrors = {};
-    if (form.name.trim().length < 2) nextErrors.name = "Name must be at least 2 characters";
-    if (!form.email.includes("@")) nextErrors.email = "Enter a valid email address";
-    if (form.password.length < 12) nextErrors.password = "Password must be at least 12 characters";
-    if (form.confirm !== form.password) nextErrors.confirm = "Passwords do not match";
+    if (!form.email.includes("@")) nextErrors.email = "Entre une adresse email valide";
+    if (form.password.length < 12) nextErrors.password = "Le mot de passe doit contenir au moins 12 caracteres";
+    if (form.confirm !== form.password) nextErrors.confirm = "Les mots de passe ne correspondent pas";
     return nextErrors;
   };
 
@@ -55,15 +51,14 @@ export default function RegisterPage() {
 
     try {
       await registerUser({
-        name: form.name,
+        // Le vrai nom complet est collecte dans l'onboarding; on garde ici un libelle neutre
+        // pour satisfaire le contrat backend sans dupliquer le champ dans l'UI.
+        name: "Utilisateur",
         email: form.email,
         password: form.password,
       });
       try {
         const session = await getCurrentSession();
-        if (session.profileId) {
-          setCurrentProfileId(session.profileId);
-        }
         router.push(session.hasProfile ? "/results" : "/onboarding");
       } catch {
         router.push("/onboarding");
@@ -90,7 +85,7 @@ export default function RegisterPage() {
     return score;
   })();
 
-  const strengthLabel = ["", "Weak", "Fair", "Good", "Strong"][strength];
+  const strengthLabel = ["", "Faible", "Correct", "Bon", "Fort"][strength];
   const strengthClass = strength > 0 ? `strength-${strength}` : "";
 
   return (
@@ -98,25 +93,10 @@ export default function RegisterPage() {
       <div className="card">
         <Link href="/" className="logo">NutriMatch</Link>
 
-        <h1 className="title">Create your account</h1>
-        <p className="sub">Start building your personalised nutrition profile</p>
+        <h1 className="title">Cree ton compte</h1>
+        <p className="sub">Commence a construire ton profil nutritionnel personnalise</p>
 
         <form onSubmit={(event) => void handleSubmit(event)} className="form" noValidate>
-          <div className="field">
-            <label className="label" htmlFor="name">Full name</label>
-            <input
-              id="name"
-              type="text"
-              autoComplete="name"
-              placeholder="Amine Benali"
-              maxLength={120}
-              className={`input ${errors.name ? "input-error" : ""}`}
-              value={form.name}
-              onChange={setField("name")}
-            />
-            {errors.name && <span className="error">{errors.name}</span>}
-          </div>
-
           <div className="field">
             <label className="label" htmlFor="email">Email</label>
             <input
@@ -133,12 +113,12 @@ export default function RegisterPage() {
           </div>
 
           <div className="field">
-            <label className="label" htmlFor="password">Password</label>
+            <label className="label" htmlFor="password">Mot de passe</label>
             <input
               id="password"
               type="password"
               autoComplete="new-password"
-              placeholder="Min. 12 characters"
+              placeholder="12 caracteres minimum"
               maxLength={128}
               className={`input ${errors.password ? "input-error" : ""}`}
               value={form.password}
@@ -161,7 +141,7 @@ export default function RegisterPage() {
           </div>
 
           <div className="field">
-            <label className="label" htmlFor="confirm">Confirm password</label>
+            <label className="label" htmlFor="confirm">Confirmer le mot de passe</label>
             <input
               id="confirm"
               type="password"
@@ -176,20 +156,20 @@ export default function RegisterPage() {
           </div>
 
           <p className="terms">
-            By creating an account you agree that your data is used solely to generate
-            personalised meal suggestions and is never shared with third parties.
+            En creant un compte, tu acceptes que tes donnees servent uniquement a generer
+            des recommandations personnalisees. Elles ne sont pas revendues a des tiers.
           </p>
 
           {errors.form && <span className="error">{errors.form}</span>}
 
           <button type="submit" className="btn" disabled={loading}>
-            {loading ? <span className="spinner" /> : "Create account"}
+            {loading ? <span className="spinner" /> : "Creer le compte"}
           </button>
         </form>
 
         <p className="switch">
-          Already have an account?{" "}
-          <Link href="/login" className="switch-link">Sign in</Link>
+          Deja un compte ?{" "}
+          <Link href="/login" className="switch-link">Se connecter</Link>
         </p>
       </div>
     </main>

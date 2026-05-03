@@ -12,8 +12,6 @@ type Props = {
     sex?: string;
     weight?: string;
     height?: string;
-    profession?: string;
-    city?: string;
   };
 };
 
@@ -91,34 +89,6 @@ export function PersonalInfoStep({ data, setData, errors }: Props) {
             }))
           }
           error={errors?.height}
-        />
-      </div>
-
-      <div className="nm-grid">
-        <Input
-          label="Profession"
-          maxLength={120}
-          value={data.personal.profession}
-          onChange={(e) =>
-            setData((prev) => ({
-              ...prev,
-              personal: { ...prev.personal, profession: e.target.value },
-            }))
-          }
-          error={errors?.profession}
-        />
-
-        <Input
-          label="Ville"
-          maxLength={120}
-          value={data.personal.city}
-          onChange={(e) =>
-            setData((prev) => ({
-              ...prev,
-              personal: { ...prev.personal, city: e.target.value },
-            }))
-          }
-          error={errors?.city}
         />
       </div>
     </>

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marina1815/nutrimatch/internal/clients/spoonacular"
+	"github.com/marina1815/nutrimatch/internal/catalog"
 	"github.com/marina1815/nutrimatch/internal/config"
 	"github.com/marina1815/nutrimatch/internal/http/handlers"
 	"github.com/marina1815/nutrimatch/internal/http/middleware"
@@ -412,41 +412,91 @@ func (r *noopExternalIdentityRepository) UpdateLogin(_ context.Context, _, _, _ 
 	return nil
 }
 
-type fakeRecipeSearcher struct {
-	resp *spoonacular.SearchResponse
-	err  error
+type fakeLocalRecipeRepository struct {
+	candidates []repository.LocalRecipeCandidate
+	err        error
 }
 
-func (s *fakeRecipeSearcher) Search(_ context.Context, _ spoonacular.SearchOptions) (*spoonacular.SearchResponse, error) {
-	if s.err != nil {
-		return nil, s.err
+func (r *fakeLocalRecipeRepository) Search(_ context.Context, _ repository.LocalRecipeQuery) ([]repository.LocalRecipeCandidate, error) {
+	if r.err != nil {
+		return nil, r.err
 	}
-	if s.resp != nil {
-		return s.resp, nil
+	if len(r.candidates) > 0 {
+		return append([]repository.LocalRecipeCandidate{}, r.candidates...), nil
 	}
-	return &spoonacular.SearchResponse{
-		Results: []spoonacular.Recipe{
-			{
-				ID:      101,
-				Title:   "Chicken Quinoa Bowl",
-				Summary: "Balanced grilled chicken bowl.",
-				Nutrition: spoonacular.Nutrition{
-					Nutrients: []spoonacular.Nutrient{
-						{Name: "Calories", Amount: 520},
-						{Name: "Protein", Amount: 42},
-						{Name: "Carbohydrates", Amount: 42},
-						{Name: "Fat", Amount: 14},
-						{Name: "Sugar", Amount: 8},
-						{Name: "Sodium", Amount: 380},
-					},
-				},
-				ExtendedIngredients: []spoonacular.Ingredient{
-					{Name: "chicken"},
-					{Name: "quinoa"},
-				},
+	return localCandidatesFromCatalogRecipes([]catalog.Recipe{{
+		ID:      101,
+		Title:   "Chicken Quinoa Bowl",
+		Summary: "Balanced grilled chicken bowl.",
+		Nutrition: catalog.Nutrition{
+			Nutrients: []catalog.Nutrient{
+				{Name: "Calories", Amount: 520},
+				{Name: "Protein", Amount: 42},
+				{Name: "Carbohydrates", Amount: 42},
+				{Name: "Fat", Amount: 14},
+				{Name: "Sugar", Amount: 8},
+				{Name: "Sodium", Amount: 380},
 			},
 		},
+		ExtendedIngredients: []catalog.Ingredient{{Name: "chicken"}, {Name: "quinoa"}},
+	}}), nil
+}
+
+func (r *fakeLocalRecipeRepository) SuggestIngredients(_ context.Context, query string, limit int) ([]repository.CatalogOption, error) {
+	return (&fakeIngredientService{}).Suggest(context.Background(), query, limit)
+}
+
+func (r *fakeLocalRecipeRepository) ListAllergies(_ context.Context) ([]repository.CatalogOption, error) {
+	return []repository.CatalogOption{
+		{Value: "dairy", Label: "Lait"},
+		{Value: "egg", Label: "Oeufs"},
+		{Value: "peanut", Label: "Arachides"},
 	}, nil
+}
+
+func localCandidatesFromCatalogRecipes(recipes []catalog.Recipe) []repository.LocalRecipeCandidate {
+	out := make([]repository.LocalRecipeCandidate, 0, len(recipes))
+	for _, recipe := range recipes {
+		ingredients := make([]string, 0, len(recipe.ExtendedIngredients))
+		for _, ingredient := range recipe.ExtendedIngredients {
+			ingredients = append(ingredients, ingredient.Name)
+		}
+		calories, protein, carbs, fat, sugar, sodium := fakeRecipeNutrients(recipe.Nutrition.Nutrients)
+		out = append(out, repository.LocalRecipeCandidate{
+			ID:          strconv.Itoa(recipe.ID),
+			Title:       recipe.Title,
+			Ingredients: ingredients,
+			Calories:    calories,
+			Protein:     protein,
+			Carbs:       carbs,
+			Fat:         fat,
+			Sugar:       sugar,
+			SodiumMg:    sodium,
+			Score:       50,
+		})
+	}
+	return out
+}
+
+func fakeRecipeNutrients(nutrients []catalog.Nutrient) (float64, float64, float64, float64, float64, float64) {
+	var calories, protein, carbs, fat, sugar, sodium float64
+	for _, nutrient := range nutrients {
+		switch strings.ToLower(nutrient.Name) {
+		case "calories":
+			calories = nutrient.Amount
+		case "protein":
+			protein = nutrient.Amount
+		case "carbohydrates":
+			carbs = nutrient.Amount
+		case "fat":
+			fat = nutrient.Amount
+		case "sugar":
+			sugar = nutrient.Amount
+		case "sodium":
+			sodium = nutrient.Amount
+		}
+	}
+	return calories, protein, carbs, fat, sugar, sodium
 }
 
 type fakeRouteAITextGenerator struct {
@@ -463,19 +513,26 @@ func (g *fakeRouteAITextGenerator) GenerateText(_ context.Context, _ string) (st
 
 type fakeIngredientService struct{}
 
-func (s *fakeIngredientService) Suggest(_ context.Context, query string, limit int) ([]string, error) {
+func (s *fakeIngredientService) Suggest(_ context.Context, query string, limit int) ([]repository.CatalogOption, error) {
 	base := []string{"paprika", "papaya", "pasta"}
-	out := make([]string, 0, limit)
+	out := make([]repository.CatalogOption, 0, limit)
 	for _, item := range base {
 		if !strings.HasPrefix(item, strings.ToLower(query)) {
 			continue
 		}
-		out = append(out, item)
+		out = append(out, repository.CatalogOption{Value: item, Label: item})
 		if len(out) >= limit {
 			break
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeIngredientService) ListAllergies(_ context.Context) ([]repository.CatalogOption, error) {
+	return []repository.CatalogOption{
+		{Value: "milk allergy", Label: "Milk Allergy", Source: "catalog"},
+		{Value: "fructose intolerance", Label: "Fructose Intolerance", Source: "catalog"},
+	}, nil
 }
 
 func testConfig() *config.Config {
@@ -515,7 +572,8 @@ type testServerOptions struct {
 	quota             *security.QuotaManager
 	authMaxFailures   int
 	authFailureWindow time.Duration
-	searcher          services.RecipeSearcher
+	localCandidates   []repository.LocalRecipeCandidate
+	localErr          error
 	ai                services.AITextGenerator
 	medicalRules      []models.MedicalRule
 }
@@ -587,13 +645,10 @@ func setupTestServerWithOptions(t *testing.T, opts testServerOptions) (*httptest
 	}
 	recommendationService := &services.RecommendationService{
 		Profiles:     profileService,
-		Recipes:      &fakeRecipeSearcher{},
+		LocalRecipes: &fakeLocalRecipeRepository{candidates: opts.localCandidates, err: opts.localErr},
 		MedicalRules: medicalRuleRepo,
 		Traces:       traceRepo,
 		Quota:        opts.quota,
-	}
-	if opts.searcher != nil {
-		recommendationService.Recipes = opts.searcher
 	}
 	if opts.ai != nil {
 		recommendationService.AI = opts.ai
@@ -640,11 +695,19 @@ func newClientWithJar(t *testing.T) *http.Client {
 
 func csrfTokenFromClient(t *testing.T, client *http.Client, baseURL string, cfg *config.Config) string {
 	t.Helper()
+	return csrfTokenFromClientWithHeaders(t, client, baseURL, cfg, nil)
+}
+
+func csrfTokenFromClientWithHeaders(t *testing.T, client *http.Client, baseURL string, cfg *config.Config, headers map[string]string) string {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/auth/csrf", nil)
 	if err != nil {
 		t.Fatalf("failed to create csrf request: %v", err)
 	}
 	req.Header.Set("Origin", cfg.TrustedOrigins[0])
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -736,28 +799,20 @@ func registerUser(t *testing.T, client *http.Client, serverURL string, cfg *conf
 func defaultProfilePayload(fullName string) map[string]any {
 	return map[string]any{
 		"personal": map[string]any{
-			"fullName":   fullName,
-			"age":        25,
-			"sex":        "male",
-			"weight":     75,
-			"height":     180,
-			"profession": "Student",
-			"city":       "Lagos",
+			"fullName": fullName,
+			"age":      25,
+			"sex":      "male",
+			"weight":   75,
+			"height":   180,
 		},
 		"lifestyle": map[string]any{
 			"activityLevel": "light",
 			"lifestyleType": "student",
 			"goal":          "weight_loss",
-			"maxReadyTime":  35,
 		},
 		"preferences": map[string]any{
-			"likes":             []string{"chicken", "quinoa"},
-			"dislikes":          []string{"bacon"},
-			"mealStyles":        []string{"healthy", "balanced"},
-			"mealTypes":         []string{"main_course"},
-			"preferredCuisines": []string{"mediterranean"},
-			"excludedCuisines":  []string{"american"},
-			"mealsPerDay":       3,
+			"likes":    []string{"chicken", "quinoa"},
+			"dislikes": []string{"bacon"},
 		},
 		"constraints": map[string]any{
 			"allergies":           []string{"dairy"},
@@ -815,28 +870,20 @@ func TestRouterRegisterProfileRecommendationFlow(t *testing.T) {
 
 	profilePayload := map[string]any{
 		"personal": map[string]any{
-			"fullName":   "Oussama Test",
-			"age":        25,
-			"sex":        "male",
-			"weight":     75,
-			"height":     180,
-			"profession": "Student",
-			"city":       "Lagos",
+			"fullName": "Oussama Test",
+			"age":      25,
+			"sex":      "male",
+			"weight":   75,
+			"height":   180,
 		},
 		"lifestyle": map[string]any{
 			"activityLevel": "light",
 			"lifestyleType": "student",
 			"goal":          "weight_loss",
-			"maxReadyTime":  35,
 		},
 		"preferences": map[string]any{
-			"likes":             []string{"chicken", "quinoa"},
-			"dislikes":          []string{"bacon"},
-			"mealStyles":        []string{"healthy", "balanced"},
-			"mealTypes":         []string{"main_course"},
-			"preferredCuisines": []string{"mediterranean"},
-			"excludedCuisines":  []string{"american"},
-			"mealsPerDay":       3,
+			"likes":    []string{"chicken", "quinoa"},
+			"dislikes": []string{"bacon"},
 		},
 		"constraints": map[string]any{
 			"allergies":           []string{"dairy"},
@@ -942,6 +989,30 @@ func TestRouterRejectsRegisterWithoutValidCSRF(t *testing.T) {
 	}
 }
 
+func TestRouterIssuesSessionBoundCSRFWithBearerToken(t *testing.T) {
+	server, refreshClient, cfg := setupTestServer(t)
+	accessToken := registerUser(t, refreshClient, server.URL, cfg, "Bearer CSRF User", "bearer-csrf@example.com")
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("failed to create isolated cookie jar: %v", err)
+	}
+	accessOnlyClient := &http.Client{Jar: jar}
+	csrfToken := csrfTokenFromClientWithHeaders(t, accessOnlyClient, server.URL, cfg, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+
+	resp := doJSON(t, accessOnlyClient, http.MethodPost, server.URL+"/api/v1/profile", defaultProfilePayload("Bearer CSRF User"), map[string]string{
+		"Authorization":    "Bearer " + accessToken,
+		"Origin":           cfg.TrustedOrigins[0],
+		cfg.CSRFHeaderName: csrfToken,
+	})
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected profile status 200 with bearer-bound csrf and no refresh cookie, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
 func TestRouterLoginAndRefreshFlow(t *testing.T) {
 	server, client, cfg := setupTestServer(t)
 
@@ -1039,24 +1110,16 @@ func TestRouterRejectsProfilePayloadWithUnknownFields(t *testing.T) {
 			"sex":        "male",
 			"weight":     75,
 			"height":     180,
-			"profession": "Student",
-			"city":       "Lagos",
 			"unexpected": "field",
 		},
 		"lifestyle": map[string]any{
 			"activityLevel": "light",
 			"lifestyleType": "student",
 			"goal":          "weight_loss",
-			"maxReadyTime":  35,
 		},
 		"preferences": map[string]any{
-			"likes":             []string{"chicken"},
-			"dislikes":          []string{},
-			"mealStyles":        []string{"healthy"},
-			"mealTypes":         []string{"main_course"},
-			"preferredCuisines": []string{"mediterranean"},
-			"excludedCuisines":  []string{},
-			"mealsPerDay":       3,
+			"likes":    []string{"chicken"},
+			"dislikes": []string{},
 		},
 		"constraints": map[string]any{
 			"allergies":           []string{},
@@ -1151,6 +1214,63 @@ func TestRouterIngredientSuggestions(t *testing.T) {
 	items, ok := payload["items"].([]any)
 	if !ok || len(items) == 0 {
 		t.Fatalf("expected ingredient suggestions")
+	}
+}
+
+func TestRouterProfileTaxonomyIncludesCatalogAllergies(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+	accessToken := registerUser(t, client, server.URL, cfg, "Taxonomy User", "taxonomy@example.com")
+
+	resp := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/profile/taxonomy", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected taxonomy status 200, got %d", resp.StatusCode)
+	}
+
+	payload := decodeJSONBody(t, resp)
+	allergies, ok := payload["allergies"].([]any)
+	if !ok || len(allergies) == 0 {
+		t.Fatalf("expected allergy options")
+	}
+
+	foundLocalAllergy := false
+	for _, item := range allergies {
+		option := item.(map[string]any)
+		if option["value"] == "fructose intolerance" {
+			foundLocalAllergy = true
+			break
+		}
+	}
+	if !foundLocalAllergy {
+		t.Fatalf("expected local catalog allergy in taxonomy response, got %#v", allergies)
+	}
+}
+
+func TestRouterAcceptsLocalCatalogAllergyInProfile(t *testing.T) {
+	server, client, cfg := setupTestServer(t)
+	accessToken := registerUser(t, client, server.URL, cfg, "Catalog Allergy User", "catalog-allergy@example.com")
+
+	payload := defaultProfilePayload("Catalog Allergy User")
+	constraints := payload["constraints"].(map[string]any)
+	constraints["allergies"] = []string{"fructose intolerance"}
+
+	profileID := upsertProfileForToken(t, client, server.URL, accessToken, payload)
+	if profileID == "" {
+		t.Fatalf("expected profile id")
+	}
+
+	resp := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/profile", nil, map[string]string{
+		"Authorization": "Bearer " + accessToken,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected profile status 200, got %d", resp.StatusCode)
+	}
+	profile := decodeJSONBody(t, resp)
+	savedConstraints := profile["constraints"].(map[string]any)
+	allergies := savedConstraints["allergies"].([]any)
+	if len(allergies) != 1 || allergies[0] != "fructose intolerance" {
+		t.Fatalf("expected local allergy to be preserved, got %#v", allergies)
 	}
 }
 
@@ -1361,51 +1481,47 @@ func TestRouterSensitiveProfileEndToEndFlow(t *testing.T) {
 
 func TestRouterAllergyFailSafeRejectsUnsafeRecipeAndPreservesTrace(t *testing.T) {
 	server, client, cfg := setupTestServerWithOptions(t, testServerOptions{
-		searcher: &fakeRecipeSearcher{
-			resp: &spoonacular.SearchResponse{
-				Results: []spoonacular.Recipe{
-					{
-						ID:      301,
-						Title:   "Creamy Dairy Pasta",
-						Summary: "A creamy pasta dish with cheese sauce.",
-						Nutrition: spoonacular.Nutrition{
-							Nutrients: []spoonacular.Nutrient{
-								{Name: "Calories", Amount: 610},
-								{Name: "Protein", Amount: 24},
-								{Name: "Carbohydrates", Amount: 58},
-								{Name: "Fat", Amount: 18},
-								{Name: "Sugar", Amount: 7},
-								{Name: "Sodium", Amount: 540},
-							},
-						},
-						ExtendedIngredients: []spoonacular.Ingredient{
-							{Name: "dairy"},
-							{Name: "pasta"},
-						},
-					},
-					{
-						ID:      302,
-						Title:   "Lemon Chicken Quinoa Bowl",
-						Summary: "Balanced grilled chicken bowl with quinoa and herbs.",
-						Nutrition: spoonacular.Nutrition{
-							Nutrients: []spoonacular.Nutrient{
-								{Name: "Calories", Amount: 520},
-								{Name: "Protein", Amount: 41},
-								{Name: "Carbohydrates", Amount: 42},
-								{Name: "Fat", Amount: 14},
-								{Name: "Sugar", Amount: 6},
-								{Name: "Sodium", Amount: 360},
-							},
-						},
-						ExtendedIngredients: []spoonacular.Ingredient{
-							{Name: "chicken"},
-							{Name: "quinoa"},
-							{Name: "lemon"},
-						},
+		localCandidates: localCandidatesFromCatalogRecipes([]catalog.Recipe{
+			{
+				ID:      301,
+				Title:   "Creamy Dairy Pasta",
+				Summary: "A creamy pasta dish with cheese sauce.",
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
+						{Name: "Calories", Amount: 610},
+						{Name: "Protein", Amount: 24},
+						{Name: "Carbohydrates", Amount: 58},
+						{Name: "Fat", Amount: 18},
+						{Name: "Sugar", Amount: 7},
+						{Name: "Sodium", Amount: 540},
 					},
 				},
+				ExtendedIngredients: []catalog.Ingredient{
+					{Name: "dairy"},
+					{Name: "pasta"},
+				},
 			},
-		},
+			{
+				ID:      302,
+				Title:   "Lemon Chicken Quinoa Bowl",
+				Summary: "Balanced grilled chicken bowl with quinoa and herbs.",
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
+						{Name: "Calories", Amount: 520},
+						{Name: "Protein", Amount: 41},
+						{Name: "Carbohydrates", Amount: 42},
+						{Name: "Fat", Amount: 14},
+						{Name: "Sugar", Amount: 6},
+						{Name: "Sodium", Amount: 360},
+					},
+				},
+				ExtendedIngredients: []catalog.Ingredient{
+					{Name: "chicken"},
+					{Name: "quinoa"},
+					{Name: "lemon"},
+				},
+			},
+		}),
 	})
 	accessToken := registerUser(t, client, server.URL, cfg, "Allergy User", "allergy@example.com")
 	profileID := upsertProfileForToken(t, client, server.URL, accessToken, defaultProfilePayload("Allergy User"))
@@ -1483,51 +1599,47 @@ func TestRouterChronicDiseaseRuleShapesNutritionAndRecommendations(t *testing.T)
 				Active:             true,
 			},
 		},
-		searcher: &fakeRecipeSearcher{
-			resp: &spoonacular.SearchResponse{
-				Results: []spoonacular.Recipe{
-					{
-						ID:      401,
-						Title:   "Anchovy Power Bowl",
-						Summary: "Savory bowl with anchovy dressing.",
-						Nutrition: spoonacular.Nutrition{
-							Nutrients: []spoonacular.Nutrient{
-								{Name: "Calories", Amount: 540},
-								{Name: "Protein", Amount: 30},
-								{Name: "Carbohydrates", Amount: 45},
-								{Name: "Fat", Amount: 18},
-								{Name: "Sugar", Amount: 6},
-								{Name: "Sodium", Amount: 820},
-							},
-						},
-						ExtendedIngredients: []spoonacular.Ingredient{
-							{Name: "anchovy"},
-							{Name: "rice"},
-						},
-					},
-					{
-						ID:      402,
-						Title:   "Low Sodium Chicken Bowl",
-						Summary: "Balanced grilled chicken bowl with herbs and quinoa.",
-						Nutrition: spoonacular.Nutrition{
-							Nutrients: []spoonacular.Nutrient{
-								{Name: "Calories", Amount: 500},
-								{Name: "Protein", Amount: 42},
-								{Name: "Carbohydrates", Amount: 40},
-								{Name: "Fat", Amount: 14},
-								{Name: "Sugar", Amount: 5},
-								{Name: "Sodium", Amount: 420},
-							},
-						},
-						ExtendedIngredients: []spoonacular.Ingredient{
-							{Name: "chicken"},
-							{Name: "quinoa"},
-							{Name: "parsley"},
-						},
+		localCandidates: localCandidatesFromCatalogRecipes([]catalog.Recipe{
+			{
+				ID:      401,
+				Title:   "Anchovy Power Bowl",
+				Summary: "Savory bowl with anchovy dressing.",
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
+						{Name: "Calories", Amount: 540},
+						{Name: "Protein", Amount: 30},
+						{Name: "Carbohydrates", Amount: 45},
+						{Name: "Fat", Amount: 18},
+						{Name: "Sugar", Amount: 6},
+						{Name: "Sodium", Amount: 820},
 					},
 				},
+				ExtendedIngredients: []catalog.Ingredient{
+					{Name: "anchovy"},
+					{Name: "rice"},
+				},
 			},
-		},
+			{
+				ID:      402,
+				Title:   "Low Sodium Chicken Bowl",
+				Summary: "Balanced grilled chicken bowl with herbs and quinoa.",
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
+						{Name: "Calories", Amount: 500},
+						{Name: "Protein", Amount: 42},
+						{Name: "Carbohydrates", Amount: 40},
+						{Name: "Fat", Amount: 14},
+						{Name: "Sugar", Amount: 5},
+						{Name: "Sodium", Amount: 420},
+					},
+				},
+				ExtendedIngredients: []catalog.Ingredient{
+					{Name: "chicken"},
+					{Name: "quinoa"},
+					{Name: "parsley"},
+				},
+			},
+		}),
 	})
 	accessToken := registerUser(t, client, server.URL, cfg, "Hypertension User", "hypertension@example.com")
 
@@ -1589,8 +1701,8 @@ func TestRouterChronicDiseaseRuleShapesNutritionAndRecommendations(t *testing.T)
 	}
 	tracePayload := decodeJSONBody(t, traceResp)
 	decisionSummary := tracePayload["decisionSummary"].(map[string]any)
-	if decisionSummary["aiApplied"] != false {
-		t.Fatalf("expected aiApplied=false for chronic disease profile, got %#v", decisionSummary["aiApplied"])
+	if decisionSummary["aiExplanationApplied"] != false {
+		t.Fatalf("expected aiExplanationApplied=false for chronic disease profile, got %#v", decisionSummary["aiExplanationApplied"])
 	}
 }
 
@@ -1606,51 +1718,47 @@ func TestRouterMedicationRuleShapesNutritionAndRecommendations(t *testing.T) {
 				Active:             true,
 			},
 		},
-		searcher: &fakeRecipeSearcher{
-			resp: &spoonacular.SearchResponse{
-				Results: []spoonacular.Recipe{
-					{
-						ID:      501,
-						Title:   "Grapefruit Chicken Salad",
-						Summary: "Salad with grapefruit segments and grilled chicken.",
-						Nutrition: spoonacular.Nutrition{
-							Nutrients: []spoonacular.Nutrient{
-								{Name: "Calories", Amount: 430},
-								{Name: "Protein", Amount: 32},
-								{Name: "Carbohydrates", Amount: 26},
-								{Name: "Fat", Amount: 12},
-								{Name: "Sugar", Amount: 11},
-								{Name: "Sodium", Amount: 350},
-							},
-						},
-						ExtendedIngredients: []spoonacular.Ingredient{
-							{Name: "grapefruit"},
-							{Name: "chicken"},
-						},
-					},
-					{
-						ID:      502,
-						Title:   "Herbed Chicken Quinoa Plate",
-						Summary: "Balanced chicken and quinoa plate with herbs.",
-						Nutrition: spoonacular.Nutrition{
-							Nutrients: []spoonacular.Nutrient{
-								{Name: "Calories", Amount: 510},
-								{Name: "Protein", Amount: 42},
-								{Name: "Carbohydrates", Amount: 41},
-								{Name: "Fat", Amount: 14},
-								{Name: "Sugar", Amount: 5},
-								{Name: "Sodium", Amount: 370},
-							},
-						},
-						ExtendedIngredients: []spoonacular.Ingredient{
-							{Name: "chicken"},
-							{Name: "quinoa"},
-							{Name: "lemon"},
-						},
+		localCandidates: localCandidatesFromCatalogRecipes([]catalog.Recipe{
+			{
+				ID:      501,
+				Title:   "Grapefruit Chicken Salad",
+				Summary: "Salad with grapefruit segments and grilled chicken.",
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
+						{Name: "Calories", Amount: 430},
+						{Name: "Protein", Amount: 32},
+						{Name: "Carbohydrates", Amount: 26},
+						{Name: "Fat", Amount: 12},
+						{Name: "Sugar", Amount: 11},
+						{Name: "Sodium", Amount: 350},
 					},
 				},
+				ExtendedIngredients: []catalog.Ingredient{
+					{Name: "grapefruit"},
+					{Name: "chicken"},
+				},
 			},
-		},
+			{
+				ID:      502,
+				Title:   "Herbed Chicken Quinoa Plate",
+				Summary: "Balanced chicken and quinoa plate with herbs.",
+				Nutrition: catalog.Nutrition{
+					Nutrients: []catalog.Nutrient{
+						{Name: "Calories", Amount: 510},
+						{Name: "Protein", Amount: 42},
+						{Name: "Carbohydrates", Amount: 41},
+						{Name: "Fat", Amount: 14},
+						{Name: "Sugar", Amount: 5},
+						{Name: "Sodium", Amount: 370},
+					},
+				},
+				ExtendedIngredients: []catalog.Ingredient{
+					{Name: "chicken"},
+					{Name: "quinoa"},
+					{Name: "lemon"},
+				},
+			},
+		}),
 	})
 	accessToken := registerUser(t, client, server.URL, cfg, "Medication User", "medication@example.com")
 
@@ -1708,8 +1816,8 @@ func TestRouterMedicationRuleShapesNutritionAndRecommendations(t *testing.T) {
 	}
 	tracePayload := decodeJSONBody(t, traceResp)
 	decisionSummary := tracePayload["decisionSummary"].(map[string]any)
-	if decisionSummary["aiApplied"] != false {
-		t.Fatalf("expected aiApplied=false for medication-sensitive profile, got %#v", decisionSummary["aiApplied"])
+	if decisionSummary["aiExplanationApplied"] != false {
+		t.Fatalf("expected aiExplanationApplied=false for medication-sensitive profile, got %#v", decisionSummary["aiExplanationApplied"])
 	}
 }
 
@@ -1749,10 +1857,8 @@ func TestRouterReturnsNoSafeMatchesWhenAllCandidatesAreRejected(t *testing.T) {
 	}
 }
 
-func TestRouterGracefullyDegradesWhenRecipeProviderIsUnavailable(t *testing.T) {
-	server, client, cfg := setupTestServerWithOptions(t, testServerOptions{
-		searcher: &fakeRecipeSearcher{err: spoonacular.ErrUpstreamFailure},
-	})
+func TestRouterUsesLocalCatalogWithoutRecipeAPI(t *testing.T) {
+	server, client, cfg := setupTestServerWithOptions(t, testServerOptions{})
 	accessToken := registerUser(t, client, server.URL, cfg, "Upstream User", "upstream@example.com")
 	profileID := upsertProfileForToken(t, client, server.URL, accessToken, defaultProfilePayload("Upstream User"))
 
@@ -1765,11 +1871,11 @@ func TestRouterGracefullyDegradesWhenRecipeProviderIsUnavailable(t *testing.T) {
 	payloadResp := decodeJSONBody(t, resp)
 	meals, ok := payloadResp["meals"].([]any)
 	if !ok || len(meals) == 0 {
-		t.Fatalf("expected local safety fallback meals on upstream outage, got %#v", payloadResp["meals"])
+		t.Fatalf("expected local catalog meals, got %#v", payloadResp["meals"])
 	}
 	firstMeal := meals[0].(map[string]any)
-	if firstMeal["source"] != "local_safety_fallback" {
-		t.Fatalf("expected local safety fallback source, got %#v", firstMeal["source"])
+	if firstMeal["source"] != "local_catalog" {
+		t.Fatalf("expected local catalog source, got %#v", firstMeal["source"])
 	}
 
 	traceResp := doJSON(t, client, http.MethodGet, server.URL+"/api/v1/recommendations/"+profileID+"/trace", nil, map[string]string{
@@ -1780,15 +1886,12 @@ func TestRouterGracefullyDegradesWhenRecipeProviderIsUnavailable(t *testing.T) {
 	}
 	tracePayload := decodeJSONBody(t, traceResp)
 	if got := strings.TrimSpace(tracePayload["status"].(string)); got != "completed" {
-		t.Fatalf("expected completed status with local fallback, got %q", got)
+		t.Fatalf("expected completed status with local catalog, got %q", got)
 	}
 	externalTrace := tracePayload["externalTrace"].(map[string]any)
-	strictTrace := externalTrace["profile_query"].(map[string]any)
-	if strictTrace["errorClass"] != "upstream_unavailable" {
-		t.Fatalf("expected upstream_unavailable trace class, got %#v", strictTrace["errorClass"])
-	}
-	if externalTrace["local_safety_fallback"] == nil {
-		t.Fatalf("expected local safety fallback trace")
+	localTrace := externalTrace["local_catalog_primary"].(map[string]any)
+	if localTrace["provider"] != "local_catalog" {
+		t.Fatalf("expected local catalog trace, got %#v", localTrace)
 	}
 }
 
@@ -1819,7 +1922,7 @@ func TestRouterGracefullyDegradesWhenAIIsUnavailable(t *testing.T) {
 	}
 	tracePayload := decodeJSONBody(t, traceResp)
 	decisionSummary := tracePayload["decisionSummary"].(map[string]any)
-	if decisionSummary["aiApplied"] != false {
-		t.Fatalf("expected aiApplied=false when AI advice fails, got %#v", decisionSummary["aiApplied"])
+	if decisionSummary["aiExplanationApplied"] != false {
+		t.Fatalf("expected aiExplanationApplied=false when AI explanation fails, got %#v", decisionSummary["aiExplanationApplied"])
 	}
 }

@@ -8,15 +8,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-nutrimatch}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      APP_DB_USER: ${APP_DB_USER:?APP_DB_USER is required}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
+      - ./docker/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 8
       start_period: 20s
     networks:
       - backend
@@ -30,47 +33,40 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 8
       start_period: 10s
     networks:
       - backend
 
   migrate:
-    image: golang:1.26.2-trixie
+    image: nutrimatch-api:local
+    build:
+      context: ./backend
     restart: "no"
-    working_dir: /workspace/backend
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-nutrimatch}?sslmode=disable
       GOOSE_DRIVER: postgres
       GOOSE_DBSTRING: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-nutrimatch}?sslmode=disable
-      GOMODCACHE: /go/pkg/mod
-      GOCACHE: /go/cache
-    volumes:
-      - ./backend:/workspace/backend:ro
-      - go_mod_cache:/go/pkg/mod
-      - go_build_cache:/go/cache
-    command:
-      - /bin/sh
-      - -ec
-      - go run github.com/pressly/goose/v3/cmd/goose@v3.27.0 -dir ./migrations up
+    command: ["goose", "-dir", "/app/migrations", "up"]
     depends_on:
       db:
         condition: service_healthy
     networks:
       - backend
-      - egress
 
   api:
-    image: golang:1.26.2-trixie
+    image: nutrimatch-api:local
+    build:
+      context: ./backend
     restart: unless-stopped
-    working_dir: /workspace/backend
-    env_file:
-      - ./backend/.env
     environment:
       APP_ENV: ${APP_ENV:-development}
       APP_PORT: 8080
-      DATABASE_URL: postgres://app:password123@db:5432/${POSTGRES_DB:-nutrimatch}?sslmode=disable
+      DATABASE_URL: postgres://${APP_DB_USER:?APP_DB_USER is required}:${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}@db:5432/${POSTGRES_DB:-nutrimatch}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-64-characters-minimum-value}
+      JWT_ISSUER: ${JWT_ISSUER:-nutrimatch}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-nutrimatch_users}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
+      REFRESH_TOKEN_TTL_HOURS: ${REFRESH_TOKEN_TTL_HOURS:-720}
       REFRESH_TOKEN_PEPPER: ${REFRESH_TOKEN_PEPPER:-dev-refresh-token-pepper-change-me-64-characters-value}
       HEALTH_DATA_ENCRYPTION_KEY: ${HEALTH_DATA_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef}
       MFA_SECRET_ENCRYPTION_KEY: ${MFA_SECRET_ENCRYPTION_KEY:-abcdef0123456789abcdef0123456789}
@@ -82,23 +78,28 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-Lax}
-      SPOONACULAR_BASE_URL: ${SPOONACULAR_BASE_URL:-https://api.spoonacular.com}
+      COOKIE_PATH_REFRESH: ${COOKIE_PATH_REFRESH:-/}
+      BODY_LIMIT_BYTES: ${BODY_LIMIT_BYTES:-1048576}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
+      AUTH_FAILURE_RETENTION_DAYS: ${AUTH_FAILURE_RETENTION_DAYS:-30}
+      RATE_LIMIT_BUCKET_RETENTION_HOURS: ${RATE_LIMIT_BUCKET_RETENTION_HOURS:-24}
+      SESSION_RETENTION_DAYS: ${SESSION_RETENTION_DAYS:-30}
+      RECOMMENDATION_TRACE_RETENTION_DAYS: ${RECOMMENDATION_TRACE_RETENTION_DAYS:-90}
       GOOGLE_AI_BASE_URL: ${GOOGLE_AI_BASE_URL:-https://generativelanguage.googleapis.com}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
       GOOGLE_AI_MODEL: ${GOOGLE_AI_MODEL:-gemini-2.5-flash}
       OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-http://localhost:8080/api/v1/auth/oidc/callback}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid,profile,email}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-oidc}
       OIDC_FRONTEND_SUCCESS_URL: ${OIDC_FRONTEND_SUCCESS_URL:-http://localhost:3000/auth/oidc/callback}
-      GOMODCACHE: /go/pkg/mod
-      GOCACHE: /go/cache
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+      WEBAUTHN_RP_DISPLAY_NAME: ${WEBAUTHN_RP_DISPLAY_NAME:-NutriMatch}
+      WEBAUTHN_ORIGINS: ${WEBAUTHN_ORIGINS:-http://localhost:3000}
     ports:
       - "127.0.0.1:${API_PORT:-8080}:8080"
-    volumes:
-      - ./backend:/workspace/backend:ro
-      - go_mod_cache:/go/pkg/mod
-      - go_build_cache:/go/cache
-    command: ["go", "run", "./cmd/api"]
     depends_on:
       db:
         condition: service_healthy
@@ -111,22 +112,18 @@ services:
       - egress
 
   frontend:
-    image: node:24.13.0-trixie
+    image: nutrimatch-frontend:local
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
     restart: unless-stopped
-    working_dir: /workspace/frontend
     environment:
       NEXT_TELEMETRY_DISABLED: "1"
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+      CSP_UPGRADE_INSECURE_REQUESTS: ${CSP_UPGRADE_INSECURE_REQUESTS:-false}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
-    volumes:
-      - ./frontend:/workspace/frontend
-      - frontend_node_modules:/workspace/frontend/node_modules
-      - frontend_next_cache:/workspace/frontend/build
-    command:
-      - /bin/sh
-      - -ec
-      - npm ci && npm run dev -- --hostname 0.0.0.0
     depends_on:
       api:
         condition: service_started
@@ -142,7 +139,3 @@ networks:
 
 volumes:
   postgres_data:
-  go_mod_cache:
-  go_build_cache:
-  frontend_node_modules:
-  frontend_next_cache:

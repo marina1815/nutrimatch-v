@@ -347,8 +347,8 @@ func (h *AuthHandler) CompleteMFALoginPasskey(c *gin.Context) {
 }
 
 func (h *AuthHandler) Refresh(c *gin.Context) {
-	refreshToken, err := c.Cookie(h.Cfg.CookieNameRefresh)
-	if err != nil {
+	refreshToken, session := h.sessionFromRefreshCookies(c)
+	if refreshToken == "" || session == nil {
 		recordAudit(c, h.Audit, services.AuditRecord{
 			EventType:    "auth.refresh",
 			ResourceType: "identity.session",
@@ -358,7 +358,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		respondError(c, http.StatusUnauthorized, "MISSING_REFRESH_TOKEN", "missing refresh token")
 		return
 	}
-	if !h.validateRefreshCSRF(c, refreshToken) {
+	if !h.validateRefreshCSRF(c, session) {
 		return
 	}
 
@@ -384,8 +384,8 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
-	refreshToken, err := c.Cookie(h.Cfg.CookieNameRefresh)
-	if err != nil {
+	refreshToken, session := h.sessionFromRefreshCookies(c)
+	if refreshToken == "" || session == nil {
 		recordAudit(c, h.Audit, services.AuditRecord{
 			EventType:    "auth.logout",
 			ResourceType: "identity.session",
@@ -395,7 +395,7 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 		respondError(c, http.StatusUnauthorized, "MISSING_REFRESH_TOKEN", "missing refresh token")
 		return
 	}
-	if !h.validateRefreshCSRF(c, refreshToken) {
+	if !h.validateRefreshCSRF(c, session) {
 		return
 	}
 
@@ -486,15 +486,27 @@ func (h *AuthHandler) CSRFToken(c *gin.Context) {
 
 	sessionID := ""
 	csrfBindingID := ""
-	if refreshToken, cookieErr := c.Cookie(h.Cfg.CookieNameRefresh); cookieErr == nil && h.Auth != nil {
-		if session, sessionErr := h.Auth.SessionFromRefreshToken(c.Request.Context(), refreshToken); sessionErr == nil {
+	userID := ""
+	authMethod := ""
+	if _, session := h.sessionFromRefreshCookies(c); session != nil {
+		sessionID = session.ID
+		csrfBindingID = session.CSRFBindingID
+		userID = session.UserID
+		authMethod = session.AuthMethod
+	}
+	if sessionID == "" {
+		if session := h.sessionFromBearerToken(c); session != nil {
 			sessionID = session.ID
 			csrfBindingID = session.CSRFBindingID
-			c.Set("user_id", session.UserID)
-			c.Set("session_id", session.ID)
-			c.Set("csrf_binding_id", session.CSRFBindingID)
-			c.Set("auth_method", session.AuthMethod)
+			userID = session.UserID
+			authMethod = session.AuthMethod
 		}
+	}
+	if sessionID != "" {
+		c.Set("user_id", userID)
+		c.Set("session_id", sessionID)
+		c.Set("csrf_binding_id", csrfBindingID)
+		c.Set("auth_method", authMethod)
 	}
 
 	token, err := h.CSRF.IssueTokenForSession(sessionID, csrfBindingID)
@@ -509,10 +521,35 @@ func (h *AuthHandler) CSRFToken(c *gin.Context) {
 	}
 	setCSRFCookie(c, h.Cfg, token, time.Now().Add(h.Cfg.CSRFTTL))
 	recordAudit(c, h.Audit, services.AuditRecord{
+		UserID:       userID,
+		SessionID:    sessionID,
 		EventType:    "auth.csrf.issue",
 		ResourceType: "identity.csrf",
 	})
 	respondOK(c, http.StatusOK, gin.H{"csrf_token": token, "header_name": h.Cfg.CSRFHeaderName})
+}
+
+func (h *AuthHandler) sessionFromBearerToken(c *gin.Context) *models.Session {
+	if h == nil || h.Auth == nil || h.Auth.Tokens == nil || h.Auth.Sessions == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(c.GetHeader("Authorization"))
+	if !strings.HasPrefix(raw, "Bearer ") {
+		return nil
+	}
+	claims, err := h.Auth.Tokens.ParseAccessToken(strings.TrimSpace(strings.TrimPrefix(raw, "Bearer ")))
+	if err != nil || claims.SessionID == "" || claims.Subject == "" {
+		return nil
+	}
+	session, err := h.Auth.Sessions.GetByID(c.Request.Context(), claims.SessionID)
+	now := time.Now()
+	if err != nil || session == nil || session.RevokedAt != nil || session.ExpiresAt.Before(now) || session.IdleExpiresAt.Before(now) {
+		return nil
+	}
+	if session.UserID != claims.Subject {
+		return nil
+	}
+	return session
 }
 
 func (h *AuthHandler) OIDCLogin(c *gin.Context) {
@@ -927,18 +964,21 @@ func containsString(values models.StringSlice, expected string) bool {
 	return false
 }
 
-func (h *AuthHandler) validateRefreshCSRF(c *gin.Context, refreshToken string) bool {
+func (h *AuthHandler) validateRefreshCSRF(c *gin.Context, session *models.Session) bool {
 	if h == nil || h.CSRF == nil || h.Auth == nil {
 		return true
 	}
-	csrfToken, err := c.Cookie(h.Cfg.CookieNameCSRF)
-	if err != nil {
+	if session == nil {
+		respondError(c, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "invalid refresh token")
+		return false
+	}
+	csrfToken := strings.TrimSpace(c.GetHeader(h.Cfg.CSRFHeaderName))
+	if csrfToken == "" {
 		respondError(c, http.StatusForbidden, "MISSING_CSRF_COOKIE", "missing csrf cookie")
 		return false
 	}
-	session, err := h.Auth.SessionFromRefreshToken(c.Request.Context(), refreshToken)
-	if err != nil {
-		respondError(c, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "invalid refresh token")
+	if !requestHasCookieValue(c, h.Cfg.CookieNameCSRF, csrfToken) {
+		respondError(c, http.StatusForbidden, "INVALID_CSRF_TOKEN", "invalid csrf token")
 		return false
 	}
 	if err := h.CSRF.ValidateTokenForSession(csrfToken, session.ID, session.CSRFBindingID); err != nil {
@@ -958,6 +998,47 @@ func (h *AuthHandler) validateRefreshCSRF(c *gin.Context, refreshToken string) b
 	c.Set("csrf_binding_id", session.CSRFBindingID)
 	c.Set("auth_method", session.AuthMethod)
 	return true
+}
+
+func (h *AuthHandler) sessionFromRefreshCookies(c *gin.Context) (string, *models.Session) {
+	if h == nil || h.Auth == nil {
+		return "", nil
+	}
+	for _, refreshToken := range requestCookieValues(c, h.Cfg.CookieNameRefresh) {
+		session, err := h.Auth.SessionFromRefreshToken(c.Request.Context(), refreshToken)
+		if err == nil && session != nil {
+			return refreshToken, session
+		}
+	}
+	return "", nil
+}
+
+func requestCookieValues(c *gin.Context, name string) []string {
+	if c == nil || c.Request == nil {
+		return nil
+	}
+	values := make([]string, 0, 1)
+	seen := make(map[string]struct{})
+	for _, cookie := range c.Request.Cookies() {
+		if cookie.Name != name || cookie.Value == "" {
+			continue
+		}
+		if _, ok := seen[cookie.Value]; ok {
+			continue
+		}
+		seen[cookie.Value] = struct{}{}
+		values = append(values, cookie.Value)
+	}
+	return values
+}
+
+func requestHasCookieValue(c *gin.Context, name, expected string) bool {
+	for _, value := range requestCookieValues(c, name) {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func tokenResponse(access string, exp time.Time) gin.H {

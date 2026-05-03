@@ -11,7 +11,6 @@ import {
   getCurrentSession,
   loginUser,
 } from "@/lib/api";
-import { setCurrentProfileId } from "@/lib/session";
 import { getSafeErrorMessage } from "@/lib/ui-errors";
 
 export default function LoginPage() {
@@ -28,8 +27,8 @@ export default function LoginPage() {
 
   const validate = () => {
     const nextErrors: typeof errors = {};
-    if (!form.email.includes("@")) nextErrors.email = "Enter a valid email address";
-    if (form.password.length < 12) nextErrors.password = "Password must be at least 12 characters";
+    if (!form.email.includes("@")) nextErrors.email = "Entre une adresse email valide";
+    if (form.password.length < 12) nextErrors.password = "Le mot de passe doit contenir au moins 12 caractères";
     return nextErrors;
   };
 
@@ -70,9 +69,6 @@ export default function LoginPage() {
   const redirectAfterLogin = async () => {
     try {
       const session = await getCurrentSession();
-      if (session.profileId) {
-        setCurrentProfileId(session.profileId);
-      }
       router.push(session.hasProfile ? "/results" : "/onboarding");
     } catch {
       router.push("/onboarding");
@@ -102,7 +98,7 @@ export default function LoginPage() {
       const begin = await beginLoginPasskey(mfa.challengeId);
       const credential = await navigator.credentials.get(normalizeCredentialRequestOptions(begin.options));
       if (!credential) {
-        throw new ApiError("Passkey verification was cancelled", 400, "PASSKEY_CANCELLED");
+        throw new ApiError("Vérification de la clé d'accès annulée", 400, "PASSKEY_CANCELLED");
       }
       await finishLoginPasskey(mfa.challengeId, begin.challengeId, credential as PublicKeyCredential);
       await redirectAfterLogin();
@@ -118,8 +114,8 @@ export default function LoginPage() {
       <div className="card">
         <Link href="/" className="logo">NutriMatch</Link>
 
-        <h1 className="title">Welcome back</h1>
-        <p className="sub">Sign in to access your nutrition profile</p>
+        <h1 className="title">Bon retour</h1>
+        <p className="sub">Connecte-toi pour accéder à ton profil nutritionnel</p>
 
         {!mfa && (
         <form onSubmit={(event) => void handleSubmit(event)} className="form" noValidate>
@@ -143,8 +139,8 @@ export default function LoginPage() {
 
           <div className="field">
             <div className="label-row">
-              <label className="label" htmlFor="password">Password</label>
-              <span className="forgot">Forgot password?</span>
+              <label className="label" htmlFor="password">Mot de passe</label>
+              <span className="forgot">Mot de passe oublié ?</span>
             </div>
             <input
               id="password"
@@ -165,7 +161,7 @@ export default function LoginPage() {
           {errors.form && <span className="error">{errors.form}</span>}
 
           <button type="submit" className="btn" disabled={loading}>
-            {loading ? <span className="spinner" /> : "Sign in"}
+            {loading ? <span className="spinner" /> : "Se connecter"}
           </button>
         </form>
         )}
@@ -173,11 +169,11 @@ export default function LoginPage() {
         {mfa && (
           <form onSubmit={(event) => void handleTotpSubmit(event)} className="form" noValidate>
             <p className="sub">
-              Multi-factor verification is required because this account has MFA enabled.
+              Une vérification MFA est requise pour ce compte.
             </p>
             {mfa.allowedMethods.includes("totp") && (
               <div className="field">
-                <label className="label" htmlFor="totp">Authenticator code</label>
+                <label className="label" htmlFor="totp">Code d&apos;authentification</label>
                 <input
                   id="totp"
                   type="text"
@@ -196,13 +192,13 @@ export default function LoginPage() {
 
             {mfa.allowedMethods.includes("totp") && (
               <button type="submit" className="btn" disabled={loading || totpCode.length !== 6}>
-                {loading ? <span className="spinner" /> : "Verify authenticator"}
+                {loading ? <span className="spinner" /> : "Vérifier le code"}
               </button>
             )}
 
             {mfa.allowedMethods.includes("passkey") && (
               <button type="button" className="btn" disabled={loading} onClick={() => void handlePasskeyLogin()}>
-                {loading && mfa.preferredMethod === "passkey" ? <span className="spinner" /> : "Verify passkey"}
+                {loading && mfa.preferredMethod === "passkey" ? <span className="spinner" /> : "Vérifier la clé d'accès"}
               </button>
             )}
 
@@ -215,14 +211,14 @@ export default function LoginPage() {
                 setErrors({});
               }}
             >
-              Use another account
+              Utiliser un autre compte
             </button>
           </form>
         )}
 
         <p className="switch">
-          No account yet?{" "}
-          <Link href="/register" className="switch-link">Create one</Link>
+          Pas encore de compte ?{" "}
+          <Link href="/register" className="switch-link">Créer un compte</Link>
         </p>
       </div>
     </main>

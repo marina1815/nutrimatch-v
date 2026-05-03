@@ -19,16 +19,13 @@ type SimilarityService struct {
 
 type SimilaritySignals struct {
 	Likes             []string
-	MealStyles        []string
-	MealTypes         []string
-	Cuisines          []string
 	Sources           []string
 	DeterministicUsed bool
 	SemanticUsed      bool
 }
 
 type SemanticExpander interface {
-	Expand(ctx context.Context, userID string, existingLikes, existingMealStyles []string) (*SimilaritySignals, error)
+	Expand(ctx context.Context, userID string, existingLikes []string) (*SimilaritySignals, error)
 }
 
 type LocalSemanticExpander struct{}
@@ -43,22 +40,12 @@ var localSimilarityGraph = map[string][]string{
 	"lentils": {"beans", "chickpeas"},
 }
 
-var localStyleGraph = map[string][]string{
-	"healthy":      {"balanced", "low-sugar"},
-	"balanced":     {"healthy", "quick"},
-	"high-protein": {"healthy", "balanced"},
-	"low-sodium":   {"healthy", "balanced"},
-	"quick":        {"balanced"},
-}
-
-func (e *LocalSemanticExpander) Expand(_ context.Context, _ string, existingLikes, existingMealStyles []string) (*SimilaritySignals, error) {
+func (e *LocalSemanticExpander) Expand(_ context.Context, _ string, existingLikes []string) (*SimilaritySignals, error) {
 	likes := expandFromGraph(existingLikes, localSimilarityGraph, 8)
-	styles := expandFromGraph(existingMealStyles, localStyleGraph, 4)
 	return &SimilaritySignals{
 		Likes:        dedupeLower(likes, existingLikes),
-		MealStyles:   dedupeLower(styles, existingMealStyles),
 		Sources:      []string{"local_semantic_graph"},
-		SemanticUsed: len(likes) > 0 || len(styles) > 0,
+		SemanticUsed: len(likes) > 0,
 	}, nil
 }
 
@@ -69,21 +56,20 @@ func (s *SimilarityService) Expand(ctx context.Context, userID string, profile *
 
 	signals := &SimilaritySignals{}
 	existingLikes := []string(preferences.Likes)
-	existingMealStyles := []string(preferences.MealStyles)
-	deterministicSignals, err := s.expandFromPeerProfiles(ctx, userID, profile.Age, lifestyle.ActivityLevel, lifestyle.Goal, existingLikes, existingMealStyles)
+	deterministicSignals, err := s.expandFromPeerProfiles(ctx, userID, profile.Age, lifestyle.ActivityLevel, lifestyle.Goal, existingLikes)
 	if err != nil {
 		return nil, err
 	}
 	signals = mergeSimilaritySignals(signals, deterministicSignals)
 
-	vectorSignals, err := s.expandFromVectorProfiles(ctx, userID, profile, lifestyle, preferences, constraints, existingLikes, existingMealStyles)
+	vectorSignals, err := s.expandFromVectorProfiles(ctx, userID, profile, lifestyle, preferences, constraints, existingLikes)
 	if err != nil {
 		return nil, err
 	}
 	signals = mergeSimilaritySignals(signals, vectorSignals)
 
 	if s.Semantic != nil {
-		semanticSignals, err := s.Semantic.Expand(ctx, userID, existingLikes, existingMealStyles)
+		semanticSignals, err := s.Semantic.Expand(ctx, userID, existingLikes)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +79,7 @@ func (s *SimilarityService) Expand(ctx context.Context, userID string, profile *
 	return signals, nil
 }
 
-func (s *SimilarityService) expandFromVectorProfiles(ctx context.Context, userID string, profile *models.Profile, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, existingLikes, existingMealStyles []string) (*SimilaritySignals, error) {
+func (s *SimilarityService) expandFromVectorProfiles(ctx context.Context, userID string, profile *models.Profile, lifestyle *models.Lifestyle, preferences *models.Preferences, constraints *models.Constraints, existingLikes []string) (*SimilaritySignals, error) {
 	if s == nil || s.Vectors == nil || s.Embeddings == nil || profile == nil {
 		return &SimilaritySignals{}, nil
 	}
@@ -110,26 +96,17 @@ func (s *SimilarityService) expandFromVectorProfiles(ctx context.Context, userID
 	}
 
 	likes := make([]string, 0)
-	styles := make([]string, 0)
-	mealTypes := make([]string, 0)
-	cuisines := make([]string, 0)
 	for _, bundle := range bundles {
 		likes = append(likes, bundle.Likes...)
-		styles = append(styles, bundle.MealStyles...)
-		mealTypes = append(mealTypes, bundle.MealTypes...)
-		cuisines = append(cuisines, bundle.PreferredCuisines...)
 	}
 	return &SimilaritySignals{
 		Likes:             dedupeLower(likes, existingLikes),
-		MealStyles:        dedupeLower(styles, existingMealStyles),
-		MealTypes:         dedupeLower(mealTypes, nil),
-		Cuisines:          dedupeLower(cuisines, nil),
 		Sources:           []string{"pgvector_profile_embeddings"},
-		DeterministicUsed: len(likes) > 0 || len(styles) > 0 || len(mealTypes) > 0 || len(cuisines) > 0,
+		DeterministicUsed: len(likes) > 0,
 	}, nil
 }
 
-func (s *SimilarityService) expandFromPeerProfiles(ctx context.Context, userID string, age int, activityLevel, goal string, existingLikes, existingMealStyles []string) (*SimilaritySignals, error) {
+func (s *SimilarityService) expandFromPeerProfiles(ctx context.Context, userID string, age int, activityLevel, goal string, existingLikes []string) (*SimilaritySignals, error) {
 	if s == nil || s.Profiles == nil {
 		return &SimilaritySignals{}, nil
 	}
@@ -154,7 +131,6 @@ func (s *SimilarityService) expandFromPeerProfiles(ctx context.Context, userID s
 		}
 		score += math.Max(0, 2-(math.Abs(float64(bundle.Age-age))/10))
 		score += overlapScore(existingLikes, bundle.Likes) * 1.5
-		score += overlapScore(existingMealStyles, bundle.MealStyles)
 		if bundle.HasChronicDisease {
 			score -= 0.5
 		}
@@ -171,26 +147,17 @@ func (s *SimilarityService) expandFromPeerProfiles(ctx context.Context, userID s
 	}
 
 	likes := make([]string, 0)
-	styles := make([]string, 0)
-	mealTypes := make([]string, 0)
-	cuisines := make([]string, 0)
 	for i := 0; i < limit; i++ {
 		if scoredProfiles[i].score <= 0 {
 			continue
 		}
 		likes = append(likes, scoredProfiles[i].bundle.Likes...)
-		styles = append(styles, scoredProfiles[i].bundle.MealStyles...)
-		mealTypes = append(mealTypes, scoredProfiles[i].bundle.MealTypes...)
-		cuisines = append(cuisines, scoredProfiles[i].bundle.PreferredCuisines...)
 	}
 
 	return &SimilaritySignals{
 		Likes:             dedupeLower(likes, existingLikes),
-		MealStyles:        dedupeLower(styles, existingMealStyles),
-		MealTypes:         dedupeLower(mealTypes, nil),
-		Cuisines:          dedupeLower(cuisines, nil),
 		Sources:           []string{"deterministic_peer_profiles"},
-		DeterministicUsed: len(likes) > 0 || len(styles) > 0 || len(mealTypes) > 0 || len(cuisines) > 0,
+		DeterministicUsed: len(likes) > 0,
 	}, nil
 }
 
@@ -266,9 +233,6 @@ func mergeSimilaritySignals(base, incoming *SimilaritySignals) *SimilaritySignal
 
 	return &SimilaritySignals{
 		Likes:             mergeLists(base.Likes, incoming.Likes),
-		MealStyles:        mergeLists(base.MealStyles, incoming.MealStyles),
-		MealTypes:         mergeLists(base.MealTypes, incoming.MealTypes),
-		Cuisines:          mergeLists(base.Cuisines, incoming.Cuisines),
 		Sources:           mergeLists(base.Sources, incoming.Sources),
 		DeterministicUsed: base.DeterministicUsed || incoming.DeterministicUsed,
 		SemanticUsed:      base.SemanticUsed || incoming.SemanticUsed,

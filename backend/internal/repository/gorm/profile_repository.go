@@ -20,21 +20,21 @@ func NewProfileRepository(db *gorm.DB) *ProfileRepository {
 func (r *ProfileRepository) UpsertProfile(ctx context.Context, profile *models.Profile) error {
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"age", "sex", "weight", "height", "profession", "profession_index", "city", "city_index", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"age", "sex", "weight", "height", "updated_at"}),
 	}).Create(profile).Error
 }
 
 func (r *ProfileRepository) UpsertLifestyle(ctx context.Context, lifestyle *models.Lifestyle) error {
 	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"activity_level", "lifestyle_type", "goal", "max_ready_time", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"activity_level", "lifestyle_type", "goal", "updated_at"}),
 	}).Create(lifestyle).Error
 }
 
 func (r *ProfileRepository) UpsertPreferences(ctx context.Context, preferences *models.Preferences) error {
 	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"meals_per_day", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"updated_at"}),
 	}).Create(preferences).Error; err != nil {
 		return err
 	}
@@ -42,32 +42,11 @@ func (r *ProfileRepository) UpsertPreferences(ctx context.Context, preferences *
 	if err := r.ensureIngredients(ctx, append(append([]string{}, preferences.Likes...), preferences.Dislikes...)); err != nil {
 		return err
 	}
-	if err := r.ensureMealStyles(ctx, []string(preferences.MealStyles)); err != nil {
-		return err
-	}
-	if err := r.ensureMealTypes(ctx, []string(preferences.MealTypes)); err != nil {
-		return err
-	}
-	if err := r.ensureCuisines(ctx, append(append([]string{}, preferences.PreferredCuisines...), preferences.ExcludedCuisines...)); err != nil {
-		return err
-	}
 
 	if err := r.replacePreferenceIngredients(ctx, preferences.UserID, "like", []string(preferences.Likes)); err != nil {
 		return err
 	}
-	if err := r.replacePreferenceIngredients(ctx, preferences.UserID, "dislike", []string(preferences.Dislikes)); err != nil {
-		return err
-	}
-	if err := r.replaceMealStyles(ctx, preferences.UserID, []string(preferences.MealStyles)); err != nil {
-		return err
-	}
-	if err := r.replaceMealTypes(ctx, preferences.UserID, []string(preferences.MealTypes)); err != nil {
-		return err
-	}
-	if err := r.replaceCuisines(ctx, preferences.UserID, "preferred", []string(preferences.PreferredCuisines)); err != nil {
-		return err
-	}
-	return r.replaceCuisines(ctx, preferences.UserID, "excluded", []string(preferences.ExcludedCuisines))
+	return r.replacePreferenceIngredients(ctx, preferences.UserID, "dislike", []string(preferences.Dislikes))
 }
 
 func (r *ProfileRepository) UpsertConstraints(ctx context.Context, constraints *models.Constraints) error {
@@ -134,22 +113,6 @@ func (r *ProfileRepository) GetProfile(ctx context.Context, userID string) (*mod
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	mealStyles, err := r.listValues(ctx, models.ProfileMealStyle{}.TableName(), "meal_style_key", userID)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	mealTypes, err := r.listValues(ctx, models.ProfileMealType{}.TableName(), "meal_type_key", userID)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	preferredCuisines, err := r.listValuesByKind(ctx, models.ProfileCuisine{}.TableName(), "cuisine_key", userID, "preferred")
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	excludedCuisines, err := r.listValuesByKind(ctx, models.ProfileCuisine{}.TableName(), "cuisine_key", userID, "excluded")
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
 	intolerances, err := r.listValues(ctx, models.ProfileIntolerance{}.TableName(), "intolerance_key", userID)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -165,10 +128,6 @@ func (r *ProfileRepository) GetProfile(ctx context.Context, userID string) (*mod
 
 	preferences.Likes = models.StringSlice(likes)
 	preferences.Dislikes = models.StringSlice(dislikes)
-	preferences.MealStyles = models.StringSlice(mealStyles)
-	preferences.MealTypes = models.StringSlice(mealTypes)
-	preferences.PreferredCuisines = models.StringSlice(preferredCuisines)
-	preferences.ExcludedCuisines = models.StringSlice(excludedCuisines)
 
 	constraints.Allergies = models.StringSlice(intolerances)
 	constraints.Conditions = models.StringSlice(conditions)
@@ -199,7 +158,7 @@ func (r *ProfileRepository) UpsertNutritionProfile(ctx context.Context, profile 
 			"max_sodium_mg_per_meal",
 			"derived_restrictions",
 			"derived_excluded",
-			"recommended_meal_styles",
+			"derived_recommendation_tags",
 			"metadata",
 			"calculated_at",
 			"updated_at",
@@ -221,13 +180,12 @@ func (r *ProfileRepository) ListProfileBundles(ctx context.Context, excludeUserI
 		Age               int
 		ActivityLevel     string
 		Goal              string
-		MaxReadyTime      int
 		HasChronicDisease bool
 	}
 
 	query := r.db.WithContext(ctx).
 		Table(models.Profile{}.TableName() + " AS p").
-		Select("p.user_id, p.age, l.activity_level, l.goal, l.max_ready_time, c.has_chronic_disease").
+		Select("p.user_id, p.age, l.activity_level, l.goal, c.has_chronic_disease").
 		Joins("JOIN " + models.Lifestyle{}.TableName() + " AS l ON l.user_id = p.user_id").
 		Joins("JOIN " + models.Constraints{}.TableName() + " AS c ON c.user_id = p.user_id")
 
@@ -255,18 +213,6 @@ func (r *ProfileRepository) ListProfileBundles(ctx context.Context, excludeUserI
 	if err != nil {
 		return nil, err
 	}
-	stylesByUser, err := r.loadGroupedValues(ctx, models.ProfileMealStyle{}.TableName(), "meal_style_key", userIDs, nil)
-	if err != nil {
-		return nil, err
-	}
-	mealTypesByUser, err := r.loadGroupedValues(ctx, models.ProfileMealType{}.TableName(), "meal_type_key", userIDs, nil)
-	if err != nil {
-		return nil, err
-	}
-	preferredCuisinesByUser, err := r.loadGroupedValues(ctx, models.ProfileCuisine{}.TableName(), "cuisine_key", userIDs, map[string]any{"kind": "preferred"})
-	if err != nil {
-		return nil, err
-	}
 	conditionsByUser, err := r.loadGroupedValues(ctx, models.ProfileCondition{}.TableName(), "condition_key", userIDs, nil)
 	if err != nil {
 		return nil, err
@@ -283,10 +229,6 @@ func (r *ProfileRepository) ListProfileBundles(ctx context.Context, excludeUserI
 			Age:               row.Age,
 			ActivityLevel:     row.ActivityLevel,
 			Goal:              row.Goal,
-			MaxReadyTime:      row.MaxReadyTime,
-			MealStyles:        stylesByUser[row.UserID],
-			MealTypes:         mealTypesByUser[row.UserID],
-			PreferredCuisines: preferredCuisinesByUser[row.UserID],
 			Likes:             likesByUser[row.UserID],
 			Conditions:        conditionsByUser[row.UserID],
 			ChronicDiseases:   chronicByUser[row.UserID],
@@ -323,84 +265,6 @@ func (r *ProfileRepository) ensureIngredients(ctx context.Context, values []stri
 	}).Create(&records).Error
 }
 
-func (r *ProfileRepository) ensureMealStyles(ctx context.Context, values []string) error {
-	if len(values) == 0 {
-		return nil
-	}
-
-	records := make([]models.CatalogMealStyle, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		records = append(records, models.CatalogMealStyle{
-			Key:         value,
-			DisplayName: value,
-			Source:      "system",
-		})
-	}
-	if len(records) == 0 {
-		return nil
-	}
-
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "key"}},
-		DoNothing: true,
-	}).Create(&records).Error
-}
-
-func (r *ProfileRepository) ensureMealTypes(ctx context.Context, values []string) error {
-	if len(values) == 0 {
-		return nil
-	}
-
-	records := make([]models.CatalogMealType, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		records = append(records, models.CatalogMealType{
-			Key:         value,
-			DisplayName: value,
-			Source:      "system",
-		})
-	}
-	if len(records) == 0 {
-		return nil
-	}
-
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "key"}},
-		DoNothing: true,
-	}).Create(&records).Error
-}
-
-func (r *ProfileRepository) ensureCuisines(ctx context.Context, values []string) error {
-	if len(values) == 0 {
-		return nil
-	}
-
-	records := make([]models.CatalogCuisine, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		records = append(records, models.CatalogCuisine{
-			Key:         value,
-			DisplayName: value,
-			Source:      "system",
-		})
-	}
-	if len(records) == 0 {
-		return nil
-	}
-
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "key"}},
-		DoNothing: true,
-	}).Create(&records).Error
-}
-
 func (r *ProfileRepository) ensureIntolerances(ctx context.Context, values []string) error {
 	if len(values) == 0 {
 		return nil
@@ -412,10 +276,10 @@ func (r *ProfileRepository) ensureIntolerances(ctx context.Context, values []str
 			continue
 		}
 		records = append(records, models.CatalogIntolerance{
-			Key:              value,
-			DisplayName:      value,
-			SpoonacularValue: value,
-			Source:           "system",
+			Key:           value,
+			DisplayName:   value,
+			ProviderValue: value,
+			Source:        "system",
 		})
 	}
 	if len(records) == 0 {
@@ -472,82 +336,6 @@ func (r *ProfileRepository) replacePreferenceIngredients(ctx context.Context, us
 			UserID:        userID,
 			IngredientKey: value,
 			Kind:          kind,
-		})
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	return tx.Create(&rows).Error
-}
-
-func (r *ProfileRepository) replaceMealStyles(ctx context.Context, userID string, values []string) error {
-	tx := r.db.WithContext(ctx)
-	if err := tx.Where("user_id = ?", userID).Delete(&models.ProfileMealStyle{}).Error; err != nil {
-		return err
-	}
-	if len(values) == 0 {
-		return nil
-	}
-
-	rows := make([]models.ProfileMealStyle, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		rows = append(rows, models.ProfileMealStyle{
-			UserID:       userID,
-			MealStyleKey: value,
-		})
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	return tx.Create(&rows).Error
-}
-
-func (r *ProfileRepository) replaceMealTypes(ctx context.Context, userID string, values []string) error {
-	tx := r.db.WithContext(ctx)
-	if err := tx.Where("user_id = ?", userID).Delete(&models.ProfileMealType{}).Error; err != nil {
-		return err
-	}
-	if len(values) == 0 {
-		return nil
-	}
-
-	rows := make([]models.ProfileMealType, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		rows = append(rows, models.ProfileMealType{
-			UserID:      userID,
-			MealTypeKey: value,
-		})
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	return tx.Create(&rows).Error
-}
-
-func (r *ProfileRepository) replaceCuisines(ctx context.Context, userID, kind string, values []string) error {
-	tx := r.db.WithContext(ctx)
-	if err := tx.Where("user_id = ? AND kind = ?", userID, kind).Delete(&models.ProfileCuisine{}).Error; err != nil {
-		return err
-	}
-	if len(values) == 0 {
-		return nil
-	}
-
-	rows := make([]models.ProfileCuisine, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		rows = append(rows, models.ProfileCuisine{
-			UserID:     userID,
-			CuisineKey: value,
-			Kind:       kind,
 		})
 	}
 	if len(rows) == 0 {

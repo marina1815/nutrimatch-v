@@ -6,7 +6,7 @@ nutrimatch/
 │   ├── internal/
 │   │   ├── clients/
 │   │   │   ├── googleai/
-│   │   │   └── spoonacular/
+│   │   │   └── catalog/
 │   │   ├── config/
 │   │   ├── database/
 │   │   ├── http/

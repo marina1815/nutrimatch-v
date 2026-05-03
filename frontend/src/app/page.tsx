@@ -1,4 +1,5 @@
 "use client";
+
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 
@@ -6,9 +7,11 @@ export default function LandingPage() {
   const blobRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!blobRef.current) return;
-      blobRef.current.style.transform = `translate(${e.clientX - 200}px, ${e.clientY - 200}px)`;
+    const handleMouseMove = (event: MouseEvent) => {
+      if (!blobRef.current) {
+        return;
+      }
+      blobRef.current.style.transform = `translate(${event.clientX - 200}px, ${event.clientY - 200}px)`;
     };
     window.addEventListener("mousemove", handleMouseMove);
     return () => window.removeEventListener("mousemove", handleMouseMove);
@@ -16,80 +19,75 @@ export default function LandingPage() {
 
   return (
     <main className="landing">
-      {/* Ambient blob that follows cursor */}
       <div className="blob" ref={blobRef} />
 
-      {/* Navbar */}
       <nav className="nav">
         <span className="logo">NutriMatch</span>
         <div className="nav-links">
-          <Link href="/login" className="nav-link">Sign in</Link>
-          <Link href="/register" className="nav-btn">Get started</Link>
+          <Link href="/login" className="nav-link">Se connecter</Link>
+          <Link href="/register" className="nav-btn">Commencer</Link>
         </div>
       </nav>
 
-      {/* Hero */}
       <section className="hero">
         <div className="hero-tag">
           <span className="dot" />
-          AI-powered meal matching
+          Recommandations sûres depuis le catalogue local
         </div>
 
         <h1 className="hero-title">
-          Eat right,<br />
-          <em>effortlessly.</em>
+          Mange mieux,<br />
+          <em>sans deviner.</em>
         </h1>
 
         <p className="hero-sub">
-          NutriMatch builds your personal nutrition profile — your weight, lifestyle,
-          allergies, goals — and finds the meals that actually fit you.
-          No generic diets. No guesswork.
+          NutriMatch construit ton profil nutritionnel, applique tes allergies,
+          contraintes santé et préférences, puis propose uniquement des repas compatibles.
+          L&apos;IA explique les choix, elle ne contourne jamais les règles de sécurité.
         </p>
 
         <div className="hero-actions">
           <Link href="/register" className="btn-primary">
-            Build my profile
+            Construire mon profil
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </Link>
-          <Link href="/onboarding" className="btn-ghost">See how it works</Link>
+          <Link href="/onboarding" className="btn-ghost">Voir le parcours</Link>
         </div>
 
-        {/* Stats row */}
         <div className="stats">
           {[
-            { value: "3 pillars", label: "Preferences · Lifestyle · Constraints" },
-            { value: "100%", label: "Personalised to your profile" },
-            { value: "Fail-safe", label: "Allergies always respected" },
-          ].map((s) => (
-            <div key={s.value} className="stat">
-              <span className="stat-value">{s.value}</span>
-              <span className="stat-label">{s.label}</span>
+            { value: "3 piliers", label: "Préférences · Mode de vie · Contraintes" },
+            { value: "20/jour", label: "Recettes sûres renouvelées toutes les 24h" },
+            { value: "Priorité santé", label: "Allergies et maladies toujours respectées" },
+          ].map((stat) => (
+            <div key={stat.value} className="stat">
+              <span className="stat-value">{stat.value}</span>
+              <span className="stat-label">{stat.label}</span>
             </div>
           ))}
         </div>
       </section>
 
-      {/* How it works */}
       <section className="how">
-        <h2 className="section-title">How it works</h2>
+        <h2 className="section-title">Comment ça marche</h2>
         <div className="steps">
           {[
             {
               n: "01",
-              title: "Fill your profile",
-              desc: "Tell us your sex, age, weight, height, activity level, objectives and food preferences.",
+              title: "Tu remplis ton profil",
+              desc: "Âge, sexe, taille, poids, mode de vie, objectif, goûts et contraintes santé.",
             },
             {
               n: "02",
-              title: "We build your nutrition plan",
-              desc: "We calculate your caloric needs, apply allergy filters and build a unique nutritional fingerprint.",
+              title: "Le moteur filtre les recettes",
+              desc: "Le backend applique d'abord les règles dures: allergies, exclusions, maladies et médicaments.",
             },
             {
               n: "03",
-              title: "Get matched meals",
-              desc: "Our hybrid engine — database + AI — returns personalised meal suggestions that respect every constraint.",
+              title: "Tu reçois tes suggestions",
+              desc: "20 repas sûrs sont proposés pour 24h, avec une explication claire pour chaque recette.",
             },
           ].map((step) => (
             <div key={step.n} className="step">
@@ -101,21 +99,19 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* CTA banner */}
       <section className="cta-banner">
-        <h2>Ready to eat smarter?</h2>
+        <h2>Prêt à manger plus intelligemment ?</h2>
         <Link href="/register" className="btn-primary">
-          Start for free
+          Démarrer gratuitement
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </Link>
       </section>
 
-      {/* Footer */}
       <footer className="footer">
         <span className="logo">NutriMatch</span>
-        <span>© 2025 — Software Security Project</span>
+        <span>© 2026 · Projet sécurité logicielle</span>
       </footer>
     </main>
   );

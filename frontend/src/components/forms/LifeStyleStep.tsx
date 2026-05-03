@@ -9,7 +9,6 @@ type Props = {
     activityLevel?: string;
     lifestyleType?: string;
     goal?: string;
-    maxReadyTime?: string;
   };
 };
 
@@ -17,7 +16,7 @@ export function LifestyleStep({ data, setData, errors }: Props) {
   return (
     <>
       <Select
-        label="Niveau d'activite"
+        label="Niveau d'activité"
         value={data.lifestyle.activityLevel}
         options={ACTIVITY_OPTIONS}
         onChange={(e) =>
@@ -60,27 +59,6 @@ export function LifestyleStep({ data, setData, errors }: Props) {
         }
         error={errors?.goal}
       />
-
-      <div className="nm-field">
-        <label className="nm-label">Temps maximal de preparation (minutes)</label>
-        <input
-          className={`nm-input ${errors?.maxReadyTime ? "nm-input-error" : ""}`}
-          type="number"
-          min={5}
-          max={240}
-          value={data.lifestyle.maxReadyTime ?? ""}
-          onChange={(e) =>
-            setData((prev) => ({
-              ...prev,
-              lifestyle: {
-                ...prev.lifestyle,
-                maxReadyTime: Number(e.target.value) || "",
-              },
-            }))
-          }
-        />
-        {errors?.maxReadyTime && <span className="nm-error">{errors.maxReadyTime}</span>}
-      </div>
     </>
   );
 }

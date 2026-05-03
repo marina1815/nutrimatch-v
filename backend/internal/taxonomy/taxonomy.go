@@ -69,11 +69,10 @@ var conditionAliases = aliasTable{
 	"cholesterol eleve":     "hypercholesterolemia",
 	"high cholesterol":      "hypercholesterolemia",
 	"digestive_sensitivity": "digestive_sensitivity",
+	"digestive sensitivity": "digestive_sensitivity",
 	"sensibilite digestive": "digestive_sensitivity",
 	"ibs":                   "digestive_sensitivity",
 	"trouble digestif":      "digestive_sensitivity",
-	"other":                 "other",
-	"autre":                 "other",
 }
 
 var mealStyleAliases = aliasTable{
@@ -185,48 +184,6 @@ func CanonicalizeMealTypeList(values []string) []string {
 
 func CanonicalizeCuisineList(values []string) []string {
 	return canonicalizeList(values, CanonicalizeCuisine)
-}
-
-func SpoonacularIntoleranceList(values []string) []string {
-	return canonicalizeList(values, SpoonacularIntolerance)
-}
-
-func SpoonacularIntolerance(input string) (string, bool) {
-	key, ok := CanonicalizeIntolerance(input)
-	if !ok {
-		return "", false
-	}
-	if key == "tree_nut" {
-		return "tree nut", true
-	}
-	return key, true
-}
-
-func SpoonacularMealType(input string) (string, bool) {
-	key, ok := CanonicalizeMealType(input)
-	if !ok {
-		return "", false
-	}
-	return strings.ReplaceAll(key, "_", " "), true
-}
-
-func SpoonacularCuisine(input string) (string, bool) {
-	key, ok := CanonicalizeCuisine(input)
-	if !ok {
-		return "", false
-	}
-	if key == "middle_eastern" {
-		return "middle eastern", true
-	}
-	return key, true
-}
-
-func SpoonacularMealTypeList(values []string) []string {
-	return canonicalizeList(values, SpoonacularMealType)
-}
-
-func SpoonacularCuisineList(values []string) []string {
-	return canonicalizeList(values, SpoonacularCuisine)
 }
 
 func NormalizeLooseToken(input string) string {

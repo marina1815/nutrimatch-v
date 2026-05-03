@@ -21,7 +21,6 @@ func (r *RetentionRepository) ApplyRetention(ctx context.Context, policy reposit
 	authFailureCutoff := now.AddDate(0, 0, -policy.AuthFailureRetentionDays)
 	rateLimitCutoff := now.Add(-time.Duration(policy.RateLimitBucketRetentionHours) * time.Hour)
 	traceCutoff := now.AddDate(0, 0, -policy.RecommendationTraceRetentionDays)
-	cacheCutoff := now.Add(-time.Duration(policy.CacheRetentionHours) * time.Hour)
 
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(`
@@ -60,21 +59,6 @@ func (r *RetentionRepository) ApplyRetention(ctx context.Context, policy reposit
 		`, traceCutoff).Error; err != nil {
 			return err
 		}
-		if err := tx.Exec(`
-			DELETE FROM recommendation.search_response_cache
-			WHERE expires_at < ? OR fetched_at < ?
-		`, now, cacheCutoff).Error; err != nil {
-			return err
-		}
-		if err := tx.Exec(`
-			DELETE FROM recommendation.external_recipe_cache
-			WHERE expires_at < ? OR fetched_at < ?
-		`, now, cacheCutoff).Error; err != nil {
-			return err
-		}
-		return tx.Exec(`
-			DELETE FROM recommendation.ingredient_resolution_cache
-			WHERE expires_at < ? OR fetched_at < ?
-		`, now, cacheCutoff).Error
+		return nil
 	})
 }

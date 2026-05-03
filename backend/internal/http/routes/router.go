@@ -89,10 +89,13 @@ func SetupRouter(cfg *config.Config, tokens *security.TokenManager, csrf *securi
 		protected.POST("/profile", authOriginGuard, csrfGuard, profiles.Upsert)
 		protected.GET("/profile", profiles.Get)
 		protected.GET("/profile/nutrition", profiles.GetNutrition)
+		protected.GET("/profile/taxonomy", profiles.CatalogOptions)
 		protected.GET("/profile/ingredients/suggest", profiles.SuggestIngredients)
 		protected.GET("/recommendations/:profileId", recs.Get)
 		protected.GET("/recommendations/:profileId/trace", recs.Trace)
 		protected.GET("/recommendations/:profileId/explanation", recs.Explain)
+		protected.POST("/recommendations/:profileId/explanations/refresh", authOriginGuard, csrfGuard, recs.RefreshExplanations)
+		protected.POST("/recommendations/:profileId/meals/:mealId/choose", authOriginGuard, csrfGuard, recs.Choose)
 	}
 
 	return r
