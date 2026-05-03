@@ -1,0 +1,141 @@
+name: nutrimatch
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.2-pg18-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nutrimatch}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      APP_DB_USER: ${APP_DB_USER:?APP_DB_USER is required}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./docker/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks:
+      - backend
+      - db_admin
+
+  redis:
+    image: redis:8.6.2-trixie
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no", "--bind", "0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    networks:
+      - backend
+
+  migrate:
+    image: nutrimatch-api:local
+    build:
+      context: ./backend
+    restart: "no"
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-nutrimatch}?sslmode=disable
+    command: ["goose", "-dir", "/app/migrations", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+
+  api:
+    image: nutrimatch-api:local
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      APP_PORT: 8080
+      DATABASE_URL: postgres://${APP_DB_USER:?APP_DB_USER is required}:${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}@db:5432/${POSTGRES_DB:-nutrimatch}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me-64-characters-minimum-value}
+      JWT_ISSUER: ${JWT_ISSUER:-nutrimatch}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-nutrimatch_users}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
+      REFRESH_TOKEN_TTL_HOURS: ${REFRESH_TOKEN_TTL_HOURS:-720}
+      REFRESH_TOKEN_PEPPER: ${REFRESH_TOKEN_PEPPER:-dev-refresh-token-pepper-change-me-64-characters-value}
+      HEALTH_DATA_ENCRYPTION_KEY: ${HEALTH_DATA_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef}
+      MFA_SECRET_ENCRYPTION_KEY: ${MFA_SECRET_ENCRYPTION_KEY:-abcdef0123456789abcdef0123456789}
+      SENSITIVE_DATA_INDEX_KEY: ${SENSITIVE_DATA_INDEX_KEY:-fedcba9876543210fedcba9876543210}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-http://localhost:3000}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      RATE_LIMIT_STORE: ${RATE_LIMIT_STORE:-redis}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-Lax}
+      COOKIE_PATH_REFRESH: ${COOKIE_PATH_REFRESH:-/}
+      BODY_LIMIT_BYTES: ${BODY_LIMIT_BYTES:-1048576}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
+      AUTH_FAILURE_RETENTION_DAYS: ${AUTH_FAILURE_RETENTION_DAYS:-30}
+      RATE_LIMIT_BUCKET_RETENTION_HOURS: ${RATE_LIMIT_BUCKET_RETENTION_HOURS:-24}
+      SESSION_RETENTION_DAYS: ${SESSION_RETENTION_DAYS:-30}
+      RECOMMENDATION_TRACE_RETENTION_DAYS: ${RECOMMENDATION_TRACE_RETENTION_DAYS:-90}
+      GOOGLE_AI_BASE_URL: ${GOOGLE_AI_BASE_URL:-https://generativelanguage.googleapis.com}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
+      GOOGLE_AI_MODEL: ${GOOGLE_AI_MODEL:-gemini-2.5-flash}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-http://localhost:8080/api/v1/auth/oidc/callback}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid,profile,email}
+      OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-oidc}
+      OIDC_FRONTEND_SUCCESS_URL: ${OIDC_FRONTEND_SUCCESS_URL:-http://localhost:3000/auth/oidc/callback}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+      WEBAUTHN_RP_DISPLAY_NAME: ${WEBAUTHN_RP_DISPLAY_NAME:-NutriMatch}
+      WEBAUTHN_ORIGINS: ${WEBAUTHN_ORIGINS:-http://localhost:3000}
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - backend
+      - egress
+
+  frontend:
+    image: nutrimatch-frontend:local
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    restart: unless-stopped
+    environment:
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+      CSP_UPGRADE_INSECURE_REQUESTS: ${CSP_UPGRADE_INSECURE_REQUESTS:-false}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - frontend
+
+networks:
+  backend:
+    internal: true
+  db_admin:
+  egress:
+  frontend:
+
+volumes:
+  postgres_data:

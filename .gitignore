@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.local
+.next/
+dist/
+build/
+bin/
+test/
+.idea/
+*.iml
+*.go.[0-9]*
+*.tmp
+*.tsbuildinfo
+.gocache/
+.modcache/

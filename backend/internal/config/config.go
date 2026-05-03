@@ -1,0 +1,489 @@
+package config
+
+import (
+	"errors"
+	"log"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	AppEnv                           string
+	AppPort                          string
+	DBURL                            string
+	BodyLimitBytes                   int64
+	AuditRetentionDays               int
+	AuthFailureRetentionDays         int
+	RateLimitBucketRetentionHours    int
+	SessionRetentionDays             int
+	RecommendationTraceRetentionDays int
+
+	JWTSecret          string
+	JWTIssuer          string
+	JWTAudience        string
+	AccessTokenTTL     time.Duration
+	RefreshTokenTTL    time.Duration
+	SessionIdleTTL     time.Duration
+	AuthFailureWindow  time.Duration
+	AuthMaxFailures    int
+	RefreshTokenPepper string
+	HealthDataKey      string
+	MFASecretKey       string
+	BlindIndexKey      string
+
+	Argon2Time       uint32
+	Argon2Memory     uint32
+	Argon2Threads    uint8
+	Argon2KeyLength  uint32
+	Argon2SaltLength uint32
+
+	CookieNameRefresh string
+	CookieNameCSRF    string
+	CookieNameOIDC    string
+	CookiePathRefresh string
+	CookiePathCSRF    string
+	CookieDomain      string
+	CookieSecure      bool
+	CookieSameSite    string
+	CSRFHeaderName    string
+	CSRFTTL           time.Duration
+
+	CORSOrigins     string
+	TrustedOrigins  []string
+	TrustedProxies  []string
+	FrontendBaseURL string
+	RedisURL        string
+	RateLimitStore  string
+
+	GoogleAIBaseURL string
+	GoogleAIAPIKey  string
+	GoogleAIModel   string
+
+	OIDCIssuerURL          string
+	OIDCClientID           string
+	OIDCClientSecret       string
+	OIDCRedirectURL        string
+	OIDCScopes             []string
+	OIDCProviderName       string
+	OIDCFrontendSuccessURL string
+
+	WebAuthnRPID          string
+	WebAuthnRPDisplayName string
+	WebAuthnOrigins       []string
+}
+
+func Load() *Config {
+	_ = godotenv.Load()
+
+	cfg := &Config{
+		AppEnv:                           getEnv("APP_ENV", "development"),
+		AppPort:                          getEnv("APP_PORT", "8080"),
+		DBURL:                            getEnv("DATABASE_URL", ""),
+		BodyLimitBytes:                   getEnvInt64("BODY_LIMIT_BYTES", 1048576),
+		AuditRetentionDays:               getEnvInt("AUDIT_RETENTION_DAYS", 365),
+		AuthFailureRetentionDays:         getEnvInt("AUTH_FAILURE_RETENTION_DAYS", 30),
+		RateLimitBucketRetentionHours:    getEnvInt("RATE_LIMIT_BUCKET_RETENTION_HOURS", 24),
+		SessionRetentionDays:             getEnvInt("SESSION_RETENTION_DAYS", 30),
+		RecommendationTraceRetentionDays: getEnvInt("RECOMMENDATION_TRACE_RETENTION_DAYS", 90),
+
+		JWTSecret:          getEnv("JWT_SECRET", ""),
+		JWTIssuer:          getEnv("JWT_ISSUER", "nutrimatch"),
+		JWTAudience:        getEnv("JWT_AUDIENCE", "nutrimatch_users"),
+		AccessTokenTTL:     time.Duration(getEnvInt("ACCESS_TOKEN_TTL_MINUTES", 15)) * time.Minute,
+		RefreshTokenTTL:    time.Duration(getEnvInt("REFRESH_TOKEN_TTL_HOURS", 720)) * time.Hour,
+		SessionIdleTTL:     time.Duration(getEnvInt("SESSION_IDLE_TTL_HOURS", 24)) * time.Hour,
+		AuthFailureWindow:  time.Duration(getEnvInt("AUTH_FAILURE_WINDOW_MINUTES", 15)) * time.Minute,
+		AuthMaxFailures:    getEnvInt("AUTH_MAX_FAILURES", 5),
+		RefreshTokenPepper: getEnv("REFRESH_TOKEN_PEPPER", getEnv("JWT_SECRET", "")),
+		HealthDataKey:      getEnv("HEALTH_DATA_ENCRYPTION_KEY", ""),
+		MFASecretKey:       getEnv("MFA_SECRET_ENCRYPTION_KEY", getEnv("HEALTH_DATA_ENCRYPTION_KEY", "")),
+		BlindIndexKey:      getEnv("SENSITIVE_DATA_INDEX_KEY", getEnv("HEALTH_DATA_ENCRYPTION_KEY", "")),
+
+		Argon2Time:       uint32(getEnvInt("ARGON2_TIME", 2)),
+		Argon2Memory:     uint32(getEnvInt("ARGON2_MEMORY", 65536)),
+		Argon2Threads:    uint8(getEnvInt("ARGON2_THREADS", 4)),
+		Argon2KeyLength:  uint32(getEnvInt("ARGON2_KEY_LENGTH", 32)),
+		Argon2SaltLength: uint32(getEnvInt("ARGON2_SALT_LENGTH", 16)),
+
+		CookieNameRefresh: getEnv("COOKIE_NAME_REFRESH", "nm_refresh"),
+		CookieNameCSRF:    getEnv("COOKIE_NAME_CSRF", "nm_csrf"),
+		CookieNameOIDC:    getEnv("COOKIE_NAME_OIDC", "nm_oidc"),
+		CookiePathRefresh: getEnv("COOKIE_PATH_REFRESH", "/"),
+		CookiePathCSRF:    getEnv("COOKIE_PATH_CSRF", "/api/v1"),
+		CookieDomain:      getEnv("COOKIE_DOMAIN", ""),
+		CookieSecure:      getEnvBool("COOKIE_SECURE", false),
+		CookieSameSite:    getEnv("COOKIE_SAMESITE", "Lax"),
+		CSRFHeaderName:    getEnv("CSRF_HEADER_NAME", "X-CSRF-Token"),
+		CSRFTTL:           time.Duration(getEnvInt("CSRF_TTL_MINUTES", 30)) * time.Minute,
+
+		CORSOrigins:     getEnv("CORS_ORIGINS", "http://localhost:3000"),
+		TrustedOrigins:  parseCSV(getEnv("TRUSTED_ORIGINS", getEnv("CORS_ORIGINS", "http://localhost:3000"))),
+		TrustedProxies:  parseCSV(getEnv("TRUSTED_PROXIES", "")),
+		FrontendBaseURL: getEnv("FRONTEND_BASE_URL", "http://localhost:3000"),
+		RedisURL:        getEnv("REDIS_URL", ""),
+		RateLimitStore:  strings.ToLower(strings.TrimSpace(getEnv("RATE_LIMIT_STORE", "postgres"))),
+
+		GoogleAIBaseURL: getEnv("GOOGLE_AI_BASE_URL", "https://generativelanguage.googleapis.com"),
+		GoogleAIAPIKey:  getEnv("GOOGLE_AI_API_KEY", ""),
+		GoogleAIModel:   getEnv("GOOGLE_AI_MODEL", "gemini-2.5-flash"),
+
+		OIDCIssuerURL:          getEnv("OIDC_ISSUER_URL", ""),
+		OIDCClientID:           getEnv("OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:       getEnv("OIDC_CLIENT_SECRET", ""),
+		OIDCRedirectURL:        getEnv("OIDC_REDIRECT_URL", ""),
+		OIDCScopes:             parseCSV(getEnv("OIDC_SCOPES", "openid,profile,email")),
+		OIDCProviderName:       getEnv("OIDC_PROVIDER_NAME", "oidc"),
+		OIDCFrontendSuccessURL: getEnv("OIDC_FRONTEND_SUCCESS_URL", getEnv("FRONTEND_BASE_URL", "http://localhost:3000")+"/auth/oidc/callback"),
+		WebAuthnRPID:           getEnv("WEBAUTHN_RP_ID", "localhost"),
+		WebAuthnRPDisplayName:  getEnv("WEBAUTHN_RP_DISPLAY_NAME", "NutriMatch"),
+		WebAuthnOrigins:        parseCSV(getEnv("WEBAUTHN_ORIGINS", getEnv("FRONTEND_BASE_URL", "http://localhost:3000"))),
+	}
+
+	if cfg.DBURL == "" {
+		log.Println("DATABASE_URL is empty")
+	}
+	if cfg.JWTSecret == "" {
+		log.Println("JWT_SECRET is empty")
+	}
+
+	return cfg
+}
+
+func (c *Config) Validate() error {
+	var problems []string
+
+	if c.DBURL == "" {
+		problems = append(problems, "DATABASE_URL is required")
+	}
+	if len(c.JWTSecret) < 32 {
+		problems = append(problems, "JWT_SECRET must be at least 32 characters")
+	}
+	if len(c.RefreshTokenPepper) < 32 {
+		problems = append(problems, "REFRESH_TOKEN_PEPPER must be at least 32 characters")
+	}
+	if len(c.HealthDataKey) != 32 {
+		problems = append(problems, "HEALTH_DATA_ENCRYPTION_KEY must be exactly 32 characters")
+	}
+	if len(c.MFASecretKey) != 32 {
+		problems = append(problems, "MFA_SECRET_ENCRYPTION_KEY must be exactly 32 characters")
+	}
+	if len(c.BlindIndexKey) < 32 {
+		problems = append(problems, "SENSITIVE_DATA_INDEX_KEY must be at least 32 characters")
+	}
+	if c.RefreshTokenPepper == c.JWTSecret {
+		problems = append(problems, "REFRESH_TOKEN_PEPPER must be distinct from JWT_SECRET")
+	}
+	if c.JWTIssuer == "" {
+		problems = append(problems, "JWT_ISSUER is required")
+	}
+	if c.JWTAudience == "" {
+		problems = append(problems, "JWT_AUDIENCE is required")
+	}
+	if c.AccessTokenTTL <= 0 || c.AccessTokenTTL > 30*time.Minute {
+		problems = append(problems, "ACCESS_TOKEN_TTL_MINUTES must be between 1 and 30")
+	}
+	if c.RefreshTokenTTL < 24*time.Hour || c.RefreshTokenTTL > 30*24*time.Hour {
+		problems = append(problems, "REFRESH_TOKEN_TTL_HOURS must be between 24 and 720")
+	}
+	if c.SessionIdleTTL < time.Hour || c.SessionIdleTTL > c.RefreshTokenTTL {
+		problems = append(problems, "SESSION_IDLE_TTL_HOURS must be between 1 hour and REFRESH_TOKEN_TTL_HOURS")
+	}
+	if c.AuthFailureWindow < time.Minute || c.AuthFailureWindow > 24*time.Hour {
+		problems = append(problems, "AUTH_FAILURE_WINDOW_MINUTES must be between 1 and 1440")
+	}
+	if c.AuthMaxFailures < 3 || c.AuthMaxFailures > 20 {
+		problems = append(problems, "AUTH_MAX_FAILURES must be between 3 and 20")
+	}
+	if c.Argon2Time < 2 {
+		problems = append(problems, "ARGON2_TIME must be at least 2")
+	}
+	if c.Argon2Memory < 64*1024 {
+		problems = append(problems, "ARGON2_MEMORY must be at least 65536 KiB")
+	}
+	if c.Argon2Threads < 1 {
+		problems = append(problems, "ARGON2_THREADS must be at least 1")
+	}
+	if c.Argon2KeyLength < 32 {
+		problems = append(problems, "ARGON2_KEY_LENGTH must be at least 32")
+	}
+	if c.Argon2SaltLength < 16 {
+		problems = append(problems, "ARGON2_SALT_LENGTH must be at least 16")
+	}
+	if c.BodyLimitBytes < 1024 || c.BodyLimitBytes > 2*1024*1024 {
+		problems = append(problems, "BODY_LIMIT_BYTES must be between 1024 and 2097152")
+	}
+	if c.AuditRetentionDays < 90 || c.AuditRetentionDays > 3650 {
+		problems = append(problems, "AUDIT_RETENTION_DAYS must be between 90 and 3650")
+	}
+	if c.AuthFailureRetentionDays < 1 || c.AuthFailureRetentionDays > 365 {
+		problems = append(problems, "AUTH_FAILURE_RETENTION_DAYS must be between 1 and 365")
+	}
+	if c.RateLimitBucketRetentionHours < 1 || c.RateLimitBucketRetentionHours > 168 {
+		problems = append(problems, "RATE_LIMIT_BUCKET_RETENTION_HOURS must be between 1 and 168")
+	}
+	if c.SessionRetentionDays < 1 || c.SessionRetentionDays > 365 {
+		problems = append(problems, "SESSION_RETENTION_DAYS must be between 1 and 365")
+	}
+	if c.RecommendationTraceRetentionDays < 7 || c.RecommendationTraceRetentionDays > 730 {
+		problems = append(problems, "RECOMMENDATION_TRACE_RETENTION_DAYS must be between 7 and 730")
+	}
+	if c.CookieNameRefresh == "" {
+		problems = append(problems, "COOKIE_NAME_REFRESH is required")
+	}
+	if c.CookieNameCSRF == "" {
+		problems = append(problems, "COOKIE_NAME_CSRF is required")
+	}
+	if c.CookiePathRefresh == "" || !strings.HasPrefix(c.CookiePathRefresh, "/") {
+		problems = append(problems, "COOKIE_PATH_REFRESH must start with '/'")
+	}
+	if c.CookiePathCSRF == "" || !strings.HasPrefix(c.CookiePathCSRF, "/") {
+		problems = append(problems, "COOKIE_PATH_CSRF must start with '/'")
+	}
+	if c.CSRFHeaderName == "" {
+		problems = append(problems, "CSRF_HEADER_NAME is required")
+	}
+	if c.CSRFTTL < 5*time.Minute || c.CSRFTTL > 24*time.Hour {
+		problems = append(problems, "CSRF_TTL_MINUTES must be between 5 and 1440")
+	}
+
+	sameSite := strings.ToLower(strings.TrimSpace(c.CookieSameSite))
+	switch sameSite {
+	case "lax", "strict", "none":
+	default:
+		problems = append(problems, "COOKIE_SAMESITE must be one of Lax, Strict, None")
+	}
+	if sameSite == "none" && !c.CookieSecure {
+		problems = append(problems, "COOKIE_SECURE must be true when COOKIE_SAMESITE=None")
+	}
+
+	if len(c.TrustedOrigins) == 0 {
+		problems = append(problems, "at least one trusted origin is required")
+	}
+	for _, origin := range c.TrustedOrigins {
+		if err := validateOrigin(origin); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	if err := validateOrigin(c.FrontendBaseURL); err != nil {
+		problems = append(problems, "invalid FRONTEND_BASE_URL")
+	}
+	switch c.RateLimitStore {
+	case "postgres", "redis":
+	default:
+		problems = append(problems, "RATE_LIMIT_STORE must be postgres or redis")
+	}
+	if c.RateLimitStore == "redis" {
+		if strings.TrimSpace(c.RedisURL) == "" {
+			problems = append(problems, "REDIS_URL is required when RATE_LIMIT_STORE=redis")
+		} else if err := validateRedisURL(c.RedisURL); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	if c.WebAuthnRPID == "" {
+		problems = append(problems, "WEBAUTHN_RP_ID is required")
+	}
+	if c.WebAuthnRPDisplayName == "" {
+		problems = append(problems, "WEBAUTHN_RP_DISPLAY_NAME is required")
+	}
+	if len(c.WebAuthnOrigins) == 0 {
+		problems = append(problems, "WEBAUTHN_ORIGINS must include at least one origin")
+	}
+	for _, origin := range c.WebAuthnOrigins {
+		if err := validateOrigin(origin); err != nil {
+			problems = append(problems, "invalid WEBAUTHN_ORIGINS entry")
+		}
+	}
+	if c.GoogleAIAPIKey != "" || c.GoogleAIBaseURL != "" {
+		if err := validateExternalURL("GOOGLE_AI_BASE_URL", c.GoogleAIBaseURL); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	if c.OIDCIssuerURL != "" || c.OIDCClientID != "" || c.OIDCClientSecret != "" {
+		if err := validateExternalURL("OIDC_ISSUER_URL", c.OIDCIssuerURL); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if c.OIDCClientID == "" {
+			problems = append(problems, "OIDC_CLIENT_ID is required when OIDC is enabled")
+		}
+		if c.OIDCClientSecret == "" {
+			problems = append(problems, "OIDC_CLIENT_SECRET is required when OIDC is enabled")
+		}
+		if err := validateAbsoluteURL("OIDC_REDIRECT_URL", c.OIDCRedirectURL); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if err := validateAbsoluteURL("OIDC_FRONTEND_SUCCESS_URL", c.OIDCFrontendSuccessURL); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+
+	if strings.EqualFold(c.AppEnv, "production") {
+		if !c.CookieSecure {
+			problems = append(problems, "COOKIE_SECURE must be true in production")
+		}
+		if isInsecureDatabaseURL(c.DBURL) {
+			problems = append(problems, "DATABASE_URL must enforce TLS in production")
+		}
+		if c.MFASecretKey == c.HealthDataKey {
+			problems = append(problems, "MFA_SECRET_ENCRYPTION_KEY must be distinct from HEALTH_DATA_ENCRYPTION_KEY in production")
+		}
+		if c.BlindIndexKey == c.HealthDataKey || c.BlindIndexKey == c.MFASecretKey || c.BlindIndexKey == c.JWTSecret {
+			problems = append(problems, "SENSITIVE_DATA_INDEX_KEY must be distinct from encryption and JWT secrets in production")
+		}
+		for _, origin := range c.TrustedOrigins {
+			if !strings.HasPrefix(origin, "https://") {
+				problems = append(problems, "trusted origins must use https in production")
+				break
+			}
+		}
+	}
+
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func getEnv(key, fallback string) string {
+	if val, ok := os.LookupEnv(key); ok {
+		return val
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	val := getEnv(key, "")
+	if val == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(val)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	val := getEnv(key, "")
+	if val == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	val := getEnv(key, "")
+	if val == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(val)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func parseCSV(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item == "" {
+			continue
+		}
+		if _, exists := seen[item]; exists {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func validateOrigin(origin string) error {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return errors.New("invalid trusted origin: " + origin)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("trusted origin must use http or https: " + origin)
+	}
+	if u.Host == "" {
+		return errors.New("trusted origin host is required: " + origin)
+	}
+	if strings.Contains(u.Host, "/") {
+		return errors.New("trusted origin must not include a path: " + origin)
+	}
+	return nil
+}
+
+func validateExternalURL(name, raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New(name + " must be a valid URL")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New(name + " host is required")
+	}
+	if u.Scheme != "https" && !isLoopbackHost(host) {
+		return errors.New(name + " must use https outside local development")
+	}
+	return nil
+}
+
+func validateAbsoluteURL(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New(name + " must be a valid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New(name + " must use http or https")
+	}
+	if u.Host == "" {
+		return errors.New(name + " host is required")
+	}
+	return nil
+}
+
+func validateRedisURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("REDIS_URL must be a valid URL")
+	}
+	if u.Scheme != "redis" && u.Scheme != "rediss" {
+		return errors.New("REDIS_URL must use redis or rediss")
+	}
+	if u.Host == "" {
+		return errors.New("REDIS_URL host is required")
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "localhost":
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isInsecureDatabaseURL(raw string) bool {
+	lower := strings.ToLower(raw)
+	return strings.Contains(lower, "sslmode=disable") || strings.Contains(lower, "sslmode=allow")
+}
